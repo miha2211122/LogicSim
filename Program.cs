@@ -12,20 +12,20 @@ public static class Program
         const int W = 1280;
         const int H = 720;
 
-        Raylib.InitWindow(W, H, "LogicSim - NAND only");
+        Raylib.InitWindow(W, H, "LogicSim");
         Raylib.SetTargetFPS(60);
 
-        // Иконка окна
         try
         {
-            if (File.Exists("icon.png"))
+            var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "xor.png");
+            if (System.IO.File.Exists(iconPath))
             {
-                var img = Raylib.LoadImage("icon.png");
+                var img = Raylib.LoadImage(iconPath);
                 Raylib.SetWindowIcon(img);
                 Raylib.UnloadImage(img);
             }
         }
-        catch { /* пропускаем */ }
+        catch { }
 
         var circuit = new Circuit();
         var a = circuit.Add(new InElement());
@@ -94,7 +94,7 @@ public static class Program
             renderer.DrawOverlay(editor, camera);
             Raylib.EndMode2D();
 
-            Raylib.DrawText("NAND simulator", 20, 20, 28, Color.White);
+            Raylib.DrawText("LogicSim", 20, 20, 28, Color.White);
             Raylib.DrawText("Pan: MMB or LMB on empty | Zoom: wheel | Shift+LMB: box select | Del: delete",
                 20, 55, 16, Color.LightGray);
 
@@ -104,6 +104,7 @@ public static class Program
                 Raylib.DrawText($"[{mode}] {editor.ContextName}", 20, 80, 20,
                     editor.IsReadOnly ? Color.Yellow : Color.SkyBlue);
             }
+
             if (editor.StatusMessage is { } msg)
                 Raylib.DrawText(msg, 20, 105, 14, Color.Yellow);
 
@@ -135,6 +136,9 @@ public static class Program
         Raylib.DrawRectangleRec(r, bg);
         Raylib.DrawRectangleLinesEx(r, 1f, new Color((byte)120, (byte)130, (byte)160, (byte)255));
         int tw = Raylib.MeasureText(text, 16);
-        Raylib.DrawText(text, (int)(r.X + (r.Width - tw) / 2), (int)(r.Y + (r.Height - 16) / 2), 16, Color.White);
+        Raylib.DrawText(text,
+            (int)(r.X + (r.Width - tw) / 2),
+            (int)(r.Y + (r.Height - 16) / 2),
+            16, Color.White);
     }
 }

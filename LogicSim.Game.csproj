@@ -5,9 +5,13 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Platforms>x64</Platforms>
-    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>LogicSim</AssemblyName>
+    <RootNamespace>LogicSim.Game</RootNamespace>
+    <StartupObject>LogicSim.Game.Program</StartupObject>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>LogicSim</Product>
+    <Description>Logic gate simulator with NAND primitives and macro system</Description>
   </PropertyGroup>
 
   <ItemGroup>

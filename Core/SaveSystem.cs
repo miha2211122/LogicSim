@@ -14,6 +14,8 @@ public sealed class SaveFile
     public List<SavedElement> Elements { get; set; } = new();
     public List<SavedWire> Wires { get; set; } = new();
     public List<SavedTemplate> Templates { get; set; } = new();
+    public List<SavedTemplate> Library { get; set; } = new();
+    public string? RecentWireColorHex { get; set; }
 }
 
 public sealed class SavedElement
@@ -22,10 +24,16 @@ public sealed class SavedElement
     public int Id { get; set; }
     public int X { get; set; }
     public int Y { get; set; }
+    public int Width { get; set; }
+    public int Height { get; set; }
     public string BodyColor { get; set; } = "";
     public string WireColor { get; set; } = "";
     public List<string>? InputLabels { get; set; }
     public List<string>? OutputLabels { get; set; }
+    public List<string>? InputPinColors { get; set; }
+    public List<string>? OutputPinColors { get; set; }
+    public List<float>? InputPinOffsets { get; set; }
+    public List<float>? OutputPinOffsets { get; set; }
     public SaveFile? ChipContent { get; set; }
 }
 
@@ -55,23 +63,20 @@ public static class SaveSystem
     };
 
     public static void Save(string path, Circuit circuit, LayoutAccessor layout,
-        Vector2 camTarget, float camZoom, List<ChipTemplate> templates, string saveName = "")
+        Vector2 camTarget, float camZoom,
+        List<ChipTemplate> templates, List<ChipTemplate> library,
+        string saveName = "", System.Drawing.Color? recentWireColor = null)
     {
         var save = SerializeCircuit(circuit, layout);
         save.CameraTarget = camTarget;
         save.CameraZoom = camZoom;
         save.Name = saveName;
+        save.RecentWireColorHex = recentWireColor.HasValue ? ColorToHex(recentWireColor.Value) : null;
 
         foreach (var tpl in templates)
-        {
-            save.Templates.Add(new SavedTemplate
-            {
-                Name = tpl.Name,
-                BodyColor = ColorToHex(tpl.BodyColor),
-                WireColor = ColorToHex(tpl.WireColor),
-                ChipContent = SerializeChip(tpl.Prototype)
-            });
-        }
+            save.Templates.Add(ToSavedTemplate(tpl));
+        foreach (var tpl in library)
+            save.Library.Add(ToSavedTemplate(tpl));
 
         File.WriteAllText(path, JsonSerializer.Serialize(save, Opts));
     }
@@ -83,7 +88,8 @@ public static class SaveSystem
     }
 
     public static void Apply(SaveFile save, Circuit circuit, LayoutAccessor layout,
-        out Vector2 camTarget, out float camZoom, List<ChipTemplate> templates)
+        out Vector2 camTarget, out float camZoom,
+        List<ChipTemplate> templates, List<ChipTemplate> library)
     {
         circuit.Clear();
         layout.Clear();
@@ -91,21 +97,36 @@ public static class SaveSystem
 
         templates.Clear();
         foreach (var t in save.Templates)
-        {
-            var chip = DeserializeChip(t.ChipContent, t.Name);
-            chip.BodyColor = HexToColor(t.BodyColor);
-            chip.WireColor = HexToColor(t.WireColor);
-            templates.Add(new ChipTemplate
-            {
-                Name = t.Name,
-                BodyColor = chip.BodyColor,
-                WireColor = chip.WireColor,
-                Prototype = chip
-            });
-        }
+            templates.Add(FromSavedTemplate(t));
+
+        library.Clear();
+        foreach (var t in save.Library)
+            library.Add(FromSavedTemplate(t));
 
         camTarget = save.CameraTarget;
         camZoom = save.CameraZoom <= 0 ? 1f : save.CameraZoom;
+    }
+
+    private static SavedTemplate ToSavedTemplate(ChipTemplate tpl) => new()
+    {
+        Name = tpl.Name,
+        BodyColor = ColorToHex(tpl.BodyColor),
+        WireColor = ColorToHex(tpl.WireColor),
+        ChipContent = SerializeChip(tpl.Prototype)
+    };
+
+    private static ChipTemplate FromSavedTemplate(SavedTemplate t)
+    {
+        var chip = DeserializeChip(t.ChipContent, t.Name);
+        chip.BodyColor = HexToColor(t.BodyColor);
+        chip.WireColor = HexToColor(t.WireColor);
+        return new ChipTemplate
+        {
+            Name = t.Name,
+            BodyColor = chip.BodyColor,
+            WireColor = chip.WireColor,
+            Prototype = chip
+        };
     }
 
     private static SaveFile SerializeCircuit(Circuit circuit, LayoutAccessor layout)
@@ -118,18 +139,31 @@ public static class SaveSystem
         {
             int id = next++;
             idMap[el] = id;
-            save.Elements.Add(new SavedElement
+
+            var se = new SavedElement
             {
                 Kind = KindOf(el),
                 Id = id,
                 X = layout.GetX(el),
                 Y = layout.GetY(el),
+                Width = el.Width,
+                Height = el.Height,
                 BodyColor = ColorToHex(el.BodyColor),
                 WireColor = ColorToHex(el.WireColor),
                 InputLabels = el.InputLabels.ToList(),
                 OutputLabels = el.OutputLabels.ToList(),
+                InputPinColors = el.Inputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
+                OutputPinColors = el.Outputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
                 ChipContent = el is ChipElement chip ? SerializeChip(chip) : null
-            });
+            };
+
+            if (el is ChipElement ce)
+            {
+                se.InputPinOffsets = ce.Inputs.Select(p => ce.GetOffset(p)).ToList();
+                se.OutputPinOffsets = ce.Outputs.Select(p => ce.GetOffset(p)).ToList();
+            }
+
+            save.Elements.Add(se);
         }
 
         foreach (var w in circuit.Wires)
@@ -164,18 +198,30 @@ public static class SaveSystem
             idMap[el] = id;
             chip.InnerPositions.TryGetValue(el, out var pos);
 
-            save.Elements.Add(new SavedElement
+            var se = new SavedElement
             {
                 Kind = KindOf(el),
                 Id = id,
                 X = pos.X,
                 Y = pos.Y,
+                Width = el.Width,
+                Height = el.Height,
                 BodyColor = ColorToHex(el.BodyColor),
                 WireColor = ColorToHex(el.WireColor),
                 InputLabels = el.InputLabels.ToList(),
                 OutputLabels = el.OutputLabels.ToList(),
+                InputPinColors = el.Inputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
+                OutputPinColors = el.Outputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
                 ChipContent = el is ChipElement c2 ? SerializeChip(c2) : null
-            });
+            };
+
+            if (el is ChipElement ce)
+            {
+                se.InputPinOffsets = ce.Inputs.Select(p => ce.GetOffset(p)).ToList();
+                se.OutputPinOffsets = ce.Outputs.Select(p => ce.GetOffset(p)).ToList();
+            }
+
+            save.Elements.Add(se);
         }
 
         foreach (var w in chip.InnerWires)
@@ -216,20 +262,7 @@ public static class SaveSystem
                 _ => new NandElement()
             };
 
-            el.BodyColor = HexToColor(s.BodyColor);
-            el.WireColor = HexToColor(s.WireColor);
-
-            if (s.InputLabels is not null && s.InputLabels.Count == el.Inputs.Count)
-            {
-                el.InputLabels.Clear();
-                el.InputLabels.AddRange(s.InputLabels);
-            }
-            if (s.OutputLabels is not null && s.OutputLabels.Count == el.Outputs.Count)
-            {
-                el.OutputLabels.Clear();
-                el.OutputLabels.AddRange(s.OutputLabels);
-            }
-
+            ApplyElementCommon(el, s);
             circuit.AddElement(el);
             layout.Place(el, s.X, s.Y);
             idMap[s.Id] = el;
@@ -248,6 +281,42 @@ public static class SaveSystem
                 for (int i = 0; i + 1 < sw.WaypointsXY.Count; i += 2)
                     w.Waypoints.Add(new Vector2(sw.WaypointsXY[i], sw.WaypointsXY[i + 1]));
             }
+        }
+    }
+
+    private static void ApplyElementCommon(Element el, SavedElement s)
+    {
+        el.BodyColor = HexToColor(s.BodyColor);
+        el.WireColor = HexToColor(s.WireColor);
+
+        if (s.InputLabels is not null && s.InputLabels.Count == el.Inputs.Count)
+        {
+            el.InputLabels.Clear(); el.InputLabels.AddRange(s.InputLabels);
+        }
+        if (s.OutputLabels is not null && s.OutputLabels.Count == el.Outputs.Count)
+        {
+            el.OutputLabels.Clear(); el.OutputLabels.AddRange(s.OutputLabels);
+        }
+
+        if (s.InputPinColors is not null)
+            for (int i = 0; i < s.InputPinColors.Count && i < el.Inputs.Count; i++)
+                if (!string.IsNullOrEmpty(s.InputPinColors[i]))
+                    el.Inputs[i].Color = HexToColor(s.InputPinColors[i]);
+        if (s.OutputPinColors is not null)
+            for (int i = 0; i < s.OutputPinColors.Count && i < el.Outputs.Count; i++)
+                if (!string.IsNullOrEmpty(s.OutputPinColors[i]))
+                    el.Outputs[i].Color = HexToColor(s.OutputPinColors[i]);
+
+        if (el is ChipElement chip)
+        {
+            if (s.Width > 0 && s.Height > 0)
+                chip.SetSize(s.Width, s.Height);
+            if (s.InputPinOffsets is not null)
+                for (int i = 0; i < s.InputPinOffsets.Count && i < chip.Inputs.Count; i++)
+                    chip.SetOffset(chip.Inputs[i], s.InputPinOffsets[i]);
+            if (s.OutputPinOffsets is not null)
+                for (int i = 0; i < s.OutputPinOffsets.Count && i < chip.Outputs.Count; i++)
+                    chip.SetOffset(chip.Outputs[i], s.OutputPinOffsets[i]);
         }
     }
 
@@ -273,20 +342,7 @@ public static class SaveSystem
                 _ => new NandElement()
             };
 
-            el.BodyColor = HexToColor(s.BodyColor);
-            el.WireColor = HexToColor(s.WireColor);
-
-            if (s.InputLabels is not null && s.InputLabels.Count == el.Inputs.Count)
-            {
-                el.InputLabels.Clear();
-                el.InputLabels.AddRange(s.InputLabels);
-            }
-            if (s.OutputLabels is not null && s.OutputLabels.Count == el.Outputs.Count)
-            {
-                el.OutputLabels.Clear();
-                el.OutputLabels.AddRange(s.OutputLabels);
-            }
-
+            ApplyElementCommon(el, s);
             inner.Add(el);
             idMap[s.Id] = el;
         }
@@ -320,10 +376,8 @@ public static class SaveSystem
             inputs.ToArray(), outputs.ToArray());
 
         foreach (var s in content.Elements)
-        {
             if (idMap.TryGetValue(s.Id, out var el))
                 chip.SetInnerPosition(el, s.X, s.Y);
-        }
 
         return chip;
     }
@@ -374,13 +428,14 @@ public static class SaveSystem
             foreach (var p in el.Inputs) if (ReferenceEquals(p, pin)) return el;
             foreach (var p in el.Outputs) if (ReferenceEquals(p, pin)) return el;
             if (el is OutElement oe && ReferenceEquals(oe.Out, pin)) return el;
+            if (el is InElement ie && ReferenceEquals(ie.In, pin)) return el;
         }
         return null;
     }
 
-    private static string ColorToHex(System.Drawing.Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+    public static string ColorToHex(System.Drawing.Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
 
-    private static System.Drawing.Color HexToColor(string hex)
+    public static System.Drawing.Color HexToColor(string hex)
     {
         if (string.IsNullOrWhiteSpace(hex) || hex.Length < 7)
             return System.Drawing.Color.FromArgb(45, 50, 70);
@@ -393,6 +448,9 @@ public static class SaveSystem
         }
         catch { return System.Drawing.Color.FromArgb(45, 50, 70); }
     }
+
+    public static System.Drawing.Color? FromHexOrNull(string? hex)
+        => string.IsNullOrWhiteSpace(hex) ? null : HexToColor(hex);
 }
 
 public interface LayoutAccessor

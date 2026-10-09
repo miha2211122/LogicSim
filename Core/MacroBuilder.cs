@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using SDColor = System.Drawing.Color;
 
 namespace LogicSim.Game.Core;
 
@@ -11,6 +12,12 @@ public sealed class MacroRecipe
     public List<(OutputPin inner, OutputPin ext)> Outputs = new();
     public List<string> InputLabels = new();
     public List<string> OutputLabels = new();
+    public List<float> InputOffsets = new();
+    public List<float> OutputOffsets = new();
+    public List<SDColor?> InputPinColors = new();
+    public List<SDColor?> OutputPinColors = new();
+    public int Width = Element.DefaultWidth;
+    public int Height = Element.DefaultHeight;
     public List<Wire> ExternalRewire = new();
     public Vector2 Center;
 }
@@ -50,6 +57,17 @@ public static class MacroBuilder
             }
         }
 
+        for (int i = 0; i < recipe.Inputs.Count; i++)
+        {
+            recipe.InputOffsets.Add(ChipElement.DefaultOffset(recipe.Inputs.Count, i));
+            recipe.InputPinColors.Add(null);
+        }
+        for (int i = 0; i < recipe.Outputs.Count; i++)
+        {
+            recipe.OutputOffsets.Add(ChipElement.DefaultOffset(recipe.Outputs.Count, i));
+            recipe.OutputPinColors.Add(null);
+        }
+
         foreach (var w in circuit.Wires)
         {
             var fromOwner = circuit.OwnerOf(w.From);
@@ -82,7 +100,7 @@ public static class MacroBuilder
 
     public static ChipElement Commit(
         Circuit circuit, MacroRecipe recipe, string name,
-        System.Drawing.Color bodyColor, System.Drawing.Color wireColor)
+        SDColor bodyColor, SDColor wireColor)
     {
         var chip = new ChipElement(
             name,
@@ -93,6 +111,20 @@ public static class MacroBuilder
 
         chip.BodyColor = bodyColor;
         chip.WireColor = wireColor;
+        chip.SetSize(recipe.Width, recipe.Height);
+
+        for (int i = 0; i < recipe.Inputs.Count && i < chip.Inputs.Count; i++)
+        {
+            chip.SetOffset(chip.Inputs[i], recipe.InputOffsets[i]);
+            if (i < recipe.InputPinColors.Count && recipe.InputPinColors[i] is SDColor ic)
+                chip.Inputs[i].Color = ic;
+        }
+        for (int i = 0; i < recipe.Outputs.Count && i < chip.Outputs.Count; i++)
+        {
+            chip.SetOffset(chip.Outputs[i], recipe.OutputOffsets[i]);
+            if (i < recipe.OutputPinColors.Count && recipe.OutputPinColors[i] is SDColor oc)
+                chip.Outputs[i].Color = oc;
+        }
 
         circuit.RemoveRange(recipe.SourceElements);
         circuit.Add(chip);

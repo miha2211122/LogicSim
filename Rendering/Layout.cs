@@ -1,12 +1,12 @@
-﻿using System.Numerics;
-using LogicSim.Game.Core;
+﻿using LogicSim.Game.Core;
+using System.Numerics;
 
 namespace LogicSim.Game.Rendering;
 
 public sealed class Layout : LayoutAccessor
 {
-    public const int W = 130;
-    public const int H = 80;
+    public const int W = Element.DefaultWidth;
+    public const int H = Element.DefaultHeight;
 
     public const float VisualPinRadius = 10f;
     public const float HitPinRadius = 14f;
@@ -22,15 +22,35 @@ public sealed class Layout : LayoutAccessor
     public int GetX(Element el) => _pos.TryGetValue(el, out var p) ? p.X : 0;
     public int GetY(Element el) => _pos.TryGetValue(el, out var p) ? p.Y : 0;
 
+    public int PinScreenY(Element el, Pin pin, bool isInput)
+    {
+        if (!_pos.TryGetValue(el, out var p)) return 0;
+
+        if (el is ChipElement chip)
+            return p.Y + (int)(chip.GetOffset(pin) * chip.Height);
+
+        // У OutElement пин Out лежит вне Outputs (терминал) — обрабатываем отдельно,
+        // иначе PinY получит count=0 и вернёт координату низа элемента.
+        if (el is OutElement oe && ReferenceEquals(oe.Out, pin))
+            return p.Y + el.Height / 2;
+
+        int count = isInput ? el.Inputs.Count : el.Outputs.Count;
+        int idx = PinIndex(el, pin, isInput);
+        return PinY(p.Y, el.Height, count, idx);
+    }
+
     public static int PinY(int top, int count, int index)
         => count == 1 ? top + H / 2 : top + H / (count + 1) * (index + 1);
+
+    public static int PinY(int top, int height, int count, int index)
+        => count == 1 ? top + height / 2 : top + height / (count + 1) * (index + 1);
 
     public Element? ElementAt(Vector2 m, IReadOnlyList<Element> elements)
     {
         foreach (var el in elements)
         {
             if (!_pos.TryGetValue(el, out var p)) continue;
-            if (m.X >= p.X && m.X <= p.X + W && m.Y >= p.Y && m.Y <= p.Y + H)
+            if (m.X >= p.X && m.X <= p.X + el.Width && m.Y >= p.Y && m.Y <= p.Y + el.Height)
                 return el;
         }
         return null;
@@ -44,16 +64,20 @@ public sealed class Layout : LayoutAccessor
 
             for (int i = 0; i < el.Inputs.Count; i++)
             {
-                var pt = new Vector2(p.X, PinY(p.Y, el.Inputs.Count, i));
+                var pin = el.Inputs[i];
+                int py = PinScreenY(el, pin, isInput: true);
+                var pt = new Vector2(p.X, py);
                 float r = el is InElement ? InInputHitRadius : HitPinRadius;
                 if (Vector2.Distance(m, pt) <= r)
-                    return new PinHit(el, el.Inputs[i], true);
+                    return new PinHit(el, pin, true);
             }
             for (int i = 0; i < el.Outputs.Count; i++)
             {
-                var pt = new Vector2(p.X + W, PinY(p.Y, el.Outputs.Count, i));
+                var pin = el.Outputs[i];
+                int py = PinScreenY(el, pin, isInput: false);
+                var pt = new Vector2(p.X + el.Width, py);
                 if (Vector2.Distance(m, pt) <= HitPinRadius)
-                    return new PinHit(el, el.Outputs[i], false);
+                    return new PinHit(el, pin, false);
             }
         }
         return null;
@@ -65,14 +89,14 @@ public sealed class Layout : LayoutAccessor
 
         for (int i = 0; i < el.Inputs.Count; i++)
             if (ReferenceEquals(el.Inputs[i], pin))
-                return new Vector2(p.X, PinY(p.Y, el.Inputs.Count, i));
+                return new Vector2(p.X, PinScreenY(el, pin, isInput: true));
 
         for (int i = 0; i < el.Outputs.Count; i++)
             if (ReferenceEquals(el.Outputs[i], pin))
-                return new Vector2(p.X + W, PinY(p.Y, el.Outputs.Count, i));
+                return new Vector2(p.X + el.Width, PinScreenY(el, pin, isInput: false));
 
         if (el is OutElement oe && ReferenceEquals(oe.Out, pin))
-            return new Vector2(p.X + W, PinY(p.Y, 1, 0));
+            return new Vector2(p.X + el.Width, PinScreenY(el, pin, isInput: false));
 
         return null;
     }
