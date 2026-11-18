@@ -13,6 +13,8 @@ public sealed class ClipboardController
         public int ToIdx;
         public int ToPinIdx;
         public List<Vector2> Waypoints = new();
+        public bool IsBus;
+        public int Layer;
     }
 
     public sealed class Data
@@ -61,7 +63,9 @@ public sealed class ClipboardController
                 FromIdx = fi,
                 FromPinIdx = Layout.PinIndex(fromOwner, w.From, isInput: false),
                 ToIdx = ti,
-                ToPinIdx = Layout.PinIndex(toOwner, w.To, isInput: true)
+                ToPinIdx = Layout.PinIndex(toOwner, w.To, isInput: true),
+                IsBus = w.IsBus,
+                Layer = w.Layer
             };
             foreach (var wp in w.Waypoints) entry.Waypoints.Add(wp);
             data.Wires.Add(entry);
@@ -77,7 +81,9 @@ public sealed class ClipboardController
         _center = ComputeBoundingCenter(_clipboard!.Elements, _clipboard.Positions);
     }
 
-    public bool CommitPaste(Circuit circuit, Layout layout, Vector2 atWorld, out List<Element> inserted)
+    public bool CommitPaste(Circuit circuit, Layout layout, Vector2 atWorld,
+        out List<Element> inserted, Action? onBeforeMutate = null,
+        Func<Element, bool>? include = null)
     {
         inserted = new List<Element>();
         if (_hologram is null) return false;
@@ -93,11 +99,14 @@ public sealed class ClipboardController
             var r = new Rectangle(p.X, p.Y, el.Width, el.Height);
             foreach (var existing in circuit.Elements)
             {
+                if (include is not null && !include(existing)) continue;
                 if (!layout.TryGet(existing, out var op)) continue;
                 if (Raylib.CheckCollisionRecs(r, new Rectangle(op.X, op.Y, existing.Width, existing.Height)))
                     return false;
             }
         }
+
+        onBeforeMutate?.Invoke();
 
         var newElements = new List<Element>();
         foreach (var el in data.Elements)
@@ -120,6 +129,8 @@ public sealed class ClipboardController
             if (fromPin is null || toPin is null) continue;
 
             var w = circuit.Connect(fromPin, toPin);
+            w.IsBus = cw.IsBus;
+            w.Layer = cw.Layer;
             foreach (var wp in cw.Waypoints) w.Waypoints.Add(wp + offset);
         }
 
@@ -149,15 +160,18 @@ public sealed class ClipboardController
     {
         Element copy = el switch
         {
-            InElement => new InElement(),
-            OutElement => new OutElement(),
+            InElement ie => new InElement(ie.BitWidth),
+            OutElement oe => new OutElement(oe.BitWidth),
             NandElement => new NandElement(),
+            BusMerger bm => new BusMerger(bm.BitWidth),
+            BusSplitter bs => new BusSplitter(bs.BitWidth),
             ChipElement ce => ce.Clone(),
             _ => throw new NotSupportedException($"Unknown element: {el.GetType().Name}")
         };
 
         copy.BodyColor = el.BodyColor;
         copy.WireColor = el.WireColor;
+        copy.Layer = el.Layer;
 
         copy.InputLabels.Clear(); copy.InputLabels.AddRange(el.InputLabels);
         copy.OutputLabels.Clear(); copy.OutputLabels.AddRange(el.OutputLabels);
@@ -166,6 +180,9 @@ public sealed class ClipboardController
             copy.Inputs[i].Color = el.Inputs[i].Color;
         for (int i = 0; i < copy.Outputs.Count && i < el.Outputs.Count; i++)
             copy.Outputs[i].Color = el.Outputs[i].Color;
+
+        if (el is OutElement oldOut && copy is OutElement newOut)
+            newOut.Out.Color = oldOut.Out.Color; // ИСПРАВЛЕНО: без [0]
 
         return copy;
     }
@@ -178,7 +195,7 @@ public sealed class ClipboardController
             return null;
         }
         if (idx >= 0 && idx < el.Outputs.Count) return el.Outputs[idx];
-        if (el is OutElement oe && idx == 0) return oe.Out;
+        if (el is OutElement oe && idx == 0) return oe.Out; // ИСПРАВЛЕНО: без [0]
         return null;
     }
 }

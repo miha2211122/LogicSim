@@ -7,7 +7,7 @@ namespace LogicSim.Game.Rendering;
 
 public sealed class Palette
 {
-    public enum Tool { None, In, Out, Nand }
+    public enum Tool { None, In, Out, Nand, Merge, Split }
 
     public Tool SelectedTool { get; private set; } = Tool.None;
     public ChipTemplate? SelectedTemplate { get; private set; }
@@ -21,7 +21,7 @@ public sealed class Palette
     public List<ChipTemplate> Library { get; } = new();
 
     public const int BarHeight = 96;
-    private const int BtnW = 100;
+    private const int BtnW = 90;
     private const int BtnH = 60;
     private const int BtnGap = 10;
     private const int Pad = 20;
@@ -29,7 +29,6 @@ public sealed class Palette
     private const int LibraryW = 140;
     private const int ScrollbarH = 10;
 
-    // Меню шаблона
     private const int MenuW = 140;
     private const int MenuRowH = 34;
     private const int MenuPad = 4;
@@ -45,7 +44,6 @@ public sealed class Palette
 
     private int _scrollX;
 
-    // Контекстное меню шаблона
     public bool IsContextMenuOpen { get; private set; }
     private ChipTemplate? _ctxTarget;
     private RRect _ctxBounds;
@@ -62,6 +60,8 @@ public sealed class Palette
         AddTool(ref x, y, Tool.In, "IN");
         AddTool(ref x, y, Tool.Out, "OUT");
         AddTool(ref x, y, Tool.Nand, "NAND");
+        AddTool(ref x, y, Tool.Merge, "MERGE");
+        AddTool(ref x, y, Tool.Split, "SPLIT");
 
         _macroRect = new RRect(_screenW - Pad - MacroW, y, MacroW, BtnH);
         _libraryRect = new RRect(_screenW - Pad - MacroW - BtnGap - LibraryW, y, LibraryW, BtnH);
@@ -101,7 +101,6 @@ public sealed class Palette
 
     public bool Update()
     {
-        // ─── Контекстное меню шаблона перехватывает ввод ───
         if (IsContextMenuOpen)
         {
             return UpdateContextMenu();
@@ -137,7 +136,8 @@ public sealed class Palette
             changed = true;
         }
 
-        // ─── ПКМ по шаблону — открыть контекстное меню ───
+        if (TryToolHotkeys()) changed = true;
+
         if (Raylib.IsMouseButtonPressed(MouseButton.Right) && IsMouseOver())
         {
             RebuildTemplateRects();
@@ -222,7 +222,6 @@ public sealed class Palette
                 return true;
             }
 
-            // клик вне меню — просто закрыть
             if (!Raylib.CheckCollisionPointRec(m, _ctxBounds))
             {
                 CloseContextMenu();
@@ -231,6 +230,31 @@ public sealed class Palette
         }
 
         return true;
+    }
+
+    private bool TryToolHotkeys()
+    {
+        Tool? hotkey = null;
+        if (Raylib.IsKeyPressed(KeyboardKey.One)) hotkey = Tool.In;
+        else if (Raylib.IsKeyPressed(KeyboardKey.Two)) hotkey = Tool.Out;
+        else if (Raylib.IsKeyPressed(KeyboardKey.Three)) hotkey = Tool.Nand;
+        else if (Raylib.IsKeyPressed(KeyboardKey.Four)) hotkey = Tool.Merge;
+        else if (Raylib.IsKeyPressed(KeyboardKey.Five)) hotkey = Tool.Split;
+
+        if (hotkey is { } tool)
+        {
+            if (SelectedTool == tool && SelectedTemplate is null) PendingCount++;
+            else { SelectedTool = tool; SelectedTemplate = null; PendingCount = 1; }
+            return true;
+        }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.Zero))
+        {
+            ClearSelection();
+            return true;
+        }
+
+        return false;
     }
 
     private void RebuildTemplateRects()
@@ -260,7 +284,6 @@ public sealed class Palette
 
         var m = Raylib.GetMousePosition();
 
-        // ─── Лента шаблонов ───
         Raylib.BeginScissorMode(
             (int)_templatesArea.X, (int)_templatesArea.Y,
             (int)_templatesArea.Width, (int)_templatesArea.Height);
@@ -328,7 +351,6 @@ public sealed class Palette
                 new RColor((byte)100, (byte)110, (byte)150, (byte)255));
         }
 
-        // ─── Инструменты ───
         foreach (var (rect, tool, label) in _tools)
         {
             bool hover = Raylib.CheckCollisionPointRec(m, rect);
@@ -337,7 +359,6 @@ public sealed class Palette
                 sel && PendingCount > 1 ? PendingCount.ToString() : null);
         }
 
-        // ─── LIBRARY ───
         {
             bool hover = Raylib.CheckCollisionPointRec(m, _libraryRect);
             var bg = hover ? new RColor((byte)120, (byte)90, (byte)180, (byte)255)
@@ -352,7 +373,6 @@ public sealed class Palette
                 18, RColor.White);
         }
 
-        // ─── MAKE MACRO ───
         bool enabled = HasElements && CanMakeMacro;
         bool hovM = Raylib.CheckCollisionPointRec(m, _macroRect);
 
@@ -373,7 +393,6 @@ public sealed class Palette
             (int)(_macroRect.Y + (_macroRect.Height - 20) / 2),
             20, enabled ? RColor.White : RColor.Gray);
 
-        // ─── Контекстное меню шаблона (поверх всего) ───
         if (IsContextMenuOpen)
             DrawContextMenu();
     }
@@ -406,11 +425,11 @@ public sealed class Palette
         Raylib.DrawRectangleLinesEx(rect, selected ? 2f : 1f,
             selected ? RColor.White : new RColor((byte)90, (byte)90, (byte)110, (byte)255));
 
-        int tw = Raylib.MeasureText(label, 20);
+        int tw = Raylib.MeasureText(label, 18);
         Raylib.DrawText(label,
             (int)(rect.X + (rect.Width - tw) / 2),
-            (int)(rect.Y + (rect.Height - 20) / 2),
-            20, RColor.White);
+            (int)(rect.Y + (rect.Height - 18) / 2),
+            18, RColor.White);
 
         if (badge is not null) DrawBadge(rect, int.Parse(badge));
     }

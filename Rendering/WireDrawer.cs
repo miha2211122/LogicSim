@@ -3,10 +3,6 @@ using System.Numerics;
 
 namespace LogicSim.Game.Rendering;
 
-/// <summary>
-/// Состояние протяжки провода: от какого выхода тянем, куда уже поставили
-/// waypoints, и завершение на приёмном входе.
-/// </summary>
 public sealed class WireDrawer
 {
     public Element? FromElement { get; private set; }
@@ -30,15 +26,20 @@ public sealed class WireDrawer
         Waypoints.Clear();
     }
 
-    /// <summary>Завершает провод на входном пине. Возвращает созданный провод или null.</summary>
     public Wire? TryFinish(Circuit circuit, PinHit hit)
     {
         if (FromPin is null) return null;
         if (!hit.IsInput) return null;
         if (hit.Pin is not InputPin input) return null;
 
+        if (FromPin.BitWidth != input.BitWidth) return null;
+
         var wire = circuit.Connect(FromPin, input);
         foreach (var wp in Waypoints) wire.Waypoints.Add(wp);
+
+        if (FromPin.BitWidth > 1 || input.BitWidth > 1)
+            wire.IsBus = true;
+
         Cancel();
         return wire;
     }

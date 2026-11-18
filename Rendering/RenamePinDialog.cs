@@ -20,6 +20,13 @@ public sealed class RenamePinDialog
     private const int Pad = 20;
     private const int BtnH = 40;
 
+    private static bool IsAllowedNameChar(char ch)
+        => (ch >= 'a' && ch <= 'z')
+        || (ch >= 'A' && ch <= 'Z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '_'
+        || ch == '-';
+
     public void Open(string title, string current, PinHit target)
     {
         Title = title;
@@ -74,7 +81,7 @@ public sealed class RenamePinDialog
             while ((c = Raylib.GetCharPressed()) != 0)
             {
                 char ch = (char)c;
-                if (NewName.Length < 14 && (char.IsLetterOrDigit(ch) || ch == '_' || ch == '-'))
+                if (NewName.Length < 14 && IsAllowedNameChar(ch))
                     NewName += ch;
             }
             if (Raylib.IsKeyPressed(KeyboardKey.Backspace) && NewName.Length > 0)

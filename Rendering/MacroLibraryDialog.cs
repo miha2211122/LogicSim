@@ -1,4 +1,5 @@
-﻿using Raylib_cs;
+﻿using LogicSim.Game.Core;
+using Raylib_cs;
 using System.Numerics;
 using RRect = Raylib_cs.Rectangle;
 using RColor = Raylib_cs.Color;
@@ -6,10 +7,6 @@ using SDColor = System.Drawing.Color;
 
 namespace LogicSim.Game.Rendering;
 
-/// <summary>
-/// Окно библиотеки макросов: список откреплённых шаблонов,
-/// для каждого — Edit / Attach / Delete.
-/// </summary>
 public sealed class MacroLibraryDialog
 {
     public bool IsOpen { get; private set; }
@@ -21,16 +18,38 @@ public sealed class MacroLibraryDialog
     private List<ChipTemplate>? _templates;
     private List<ChipTemplate>? _library;
 
-    private const int Width = 660;
-    private const int Pad = 20;
-    private const int RowH = 56;
-    private const int BtnH = 36;
-    private const int MaxRows = 9;
-    private const int SmallBtnW = 90;
+    private const int Width = 720;
+    private const int Pad = 24;
+    private const int RowH = 68;
+    private const int BtnH = 40;
+    private const int MaxRows = 8;
+    private const int SmallBtnW = 96;
+    private const int PreviewSize = 48;
+
+    private static readonly RColor DialogBg = new(22, 24, 32, 250);
+    private static readonly RColor DialogBorderOuter = new(60, 80, 120, 80);
+    private static readonly RColor DialogBorderMid = new(80, 100, 150, 130);
+    private static readonly RColor DialogBorder = new(110, 140, 190, 255);
+    private static readonly RColor RowBg = new(32, 36, 50, 255);
+    private static readonly RColor RowBgHover = new(40, 46, 64, 255);
+    private static readonly RColor RowBorder = new(58, 68, 92, 255);
+    private static readonly RColor TextPrimary = new(240, 244, 252, 255);
+    private static readonly RColor TextSecondary = new(170, 185, 210, 255);
+    private static readonly RColor TextMuted = new(110, 125, 150, 255);
+    private static readonly RColor SectionLabel = new(150, 175, 215, 255);
+    private static readonly RColor DimBackdrop = new(0, 0, 0, 180);
+    private static readonly RColor ButtonBg = new(48, 54, 72, 255);
+    private static readonly RColor ButtonBgHover = new(62, 70, 92, 255);
+    private static readonly RColor ButtonBorder = new(100, 115, 150, 255);
+    private static readonly RColor AccentEdit = new(80, 140, 210, 255);
+    private static readonly RColor AccentAttach = new(80, 180, 100, 255);
+    private static readonly RColor AccentDelete = new(200, 90, 90, 255);
 
     private RRect _bounds;
     private RRect _closeRect;
     private readonly List<(RRect Row, RRect BtEdit, RRect BtAttach, RRect BtDelete, int Index)> _rows = new();
+    private int _headerY;
+    private int _subHeaderY;
 
     public void Open(List<ChipTemplate> templates, List<ChipTemplate> library)
     {
@@ -42,7 +61,7 @@ public sealed class MacroLibraryDialog
         DeleteRequested = null;
 
         int rows = Math.Min(Math.Max(library.Count, 1), MaxRows);
-        int h = Pad * 2 + 30 + 22 + rows * RowH + 20 + BtnH;
+        int h = Pad * 2 + 30 + 24 + rows * RowH + 20 + BtnH;
 
         int sw = Raylib.GetScreenWidth();
         int sh = Raylib.GetScreenHeight();
@@ -57,7 +76,12 @@ public sealed class MacroLibraryDialog
         if (_library is null) return;
 
         int x = (int)_bounds.X + Pad;
-        int y = (int)_bounds.Y + Pad + 30 + 22;
+        int y = (int)_bounds.Y + Pad;
+
+        _headerY = y;
+        y += 30;
+        _subHeaderY = y;
+        y += 24;
 
         int rowW = Width - Pad * 2;
         int right = x + rowW;
@@ -69,9 +93,9 @@ public sealed class MacroLibraryDialog
         for (int i = 0; i < shown; i++)
         {
             var row = new RRect(x, y + i * RowH, rowW, RowH - 6);
-            var btEdit = new RRect(editX, row.Y + 8, SmallBtnW, RowH - 22);
-            var btAttach = new RRect(attX, row.Y + 8, SmallBtnW, RowH - 22);
-            var btDelete = new RRect(delX, row.Y + 8, SmallBtnW, RowH - 22);
+            var btEdit = new RRect(editX, row.Y + (row.Height - 30) / 2, SmallBtnW, 30);
+            var btAttach = new RRect(attX, row.Y + (row.Height - 30) / 2, SmallBtnW, 30);
+            var btDelete = new RRect(delX, row.Y + (row.Height - 30) / 2, SmallBtnW, 30);
             _rows.Add((row, btEdit, btAttach, btDelete, i));
         }
 
@@ -108,7 +132,7 @@ public sealed class MacroLibraryDialog
             return;
         }
 
-        foreach (var (row, btEdit, btAttach, btDelete, idx) in _rows)
+        foreach (var (_, btEdit, btAttach, btDelete, idx) in _rows)
         {
             if (idx < 0 || idx >= _library.Count) continue;
 
@@ -134,70 +158,90 @@ public sealed class MacroLibraryDialog
     {
         if (!IsOpen || _library is null) return;
 
-        Raylib.DrawRectangle(0, 0, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(),
-            new RColor((byte)0, (byte)0, (byte)0, (byte)170));
-        Raylib.DrawRectangleRec(_bounds, new RColor((byte)30, (byte)32, (byte)44, (byte)255));
-        Raylib.DrawRectangleLinesEx(_bounds, 2f, new RColor((byte)120, (byte)140, (byte)180, (byte)255));
+        Raylib.DrawRectangle(0, 0, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), DimBackdrop);
+
+        var glow1 = new RRect(_bounds.X - 3, _bounds.Y - 3, _bounds.Width + 6, _bounds.Height + 6);
+        var glow2 = new RRect(_bounds.X - 1, _bounds.Y - 1, _bounds.Width + 2, _bounds.Height + 2);
+        Raylib.DrawRectangleLinesEx(glow1, 1f, DialogBorderOuter);
+        Raylib.DrawRectangleLinesEx(glow2, 1f, DialogBorderMid);
+
+        Raylib.DrawRectangleRec(_bounds, DialogBg);
+        Raylib.DrawRectangleLinesEx(_bounds, 2f, DialogBorder);
 
         int x = (int)_bounds.X + Pad;
-        int y = (int)_bounds.Y + Pad;
 
-        Raylib.DrawText("Macro Library", x, y, 24, RColor.White);
-        y += 30;
+        Raylib.DrawText("Macro Library", x, _headerY, 26, TextPrimary);
+        Raylib.DrawRectangle(x, _headerY + 32, 64, 2, AccentEdit);
 
-        Raylib.DrawText($"({_library.Count} detached)", x, y, 14, RColor.LightGray);
-        y += 22;
-
-        var m = Raylib.GetMousePosition();
+        Raylib.DrawText($"{_library.Count} macro{(_library.Count == 1 ? "" : "s")} detached from the palette",
+            x, _subHeaderY, 14, SectionLabel);
 
         if (_library.Count == 0)
         {
-            Raylib.DrawText("(library is empty)", x + 8, y + 8, 18, RColor.Gray);
+            Raylib.DrawText("Library is empty.",
+                x + 8, _subHeaderY + 30, 18, TextMuted);
+            Raylib.DrawText("Right-click a macro in the palette → Unstar to detach it here.",
+                x + 8, _subHeaderY + 56, 14, TextMuted);
         }
+
+        var m = Raylib.GetMousePosition();
 
         foreach (var (row, btEdit, btAttach, btDelete, idx) in _rows)
         {
             if (idx < 0 || idx >= _library.Count) continue;
             var tpl = _library[idx];
 
-            Raylib.DrawRectangleRec(row, new RColor((byte)40, (byte)44, (byte)58, (byte)255));
-            Raylib.DrawRectangleLinesEx(row, 1f, new RColor((byte)80, (byte)85, (byte)110, (byte)255));
+            bool rowHover = Raylib.CheckCollisionPointRec(m, row);
+            Raylib.DrawRectangleRec(row, rowHover ? RowBgHover : RowBg);
+            Raylib.DrawRectangleLinesEx(row, 1f, RowBorder);
 
-            // Цветной квадратик-превью.
-            var preview = new RRect(row.X + 8, row.Y + 8, row.Height - 16, row.Height - 16);
+            var preview = new RRect(row.X + 10, row.Y + (row.Height - PreviewSize) / 2, PreviewSize, PreviewSize);
             Raylib.DrawRectangleRec(preview, new RColor(tpl.BodyColor.R, tpl.BodyColor.G, tpl.BodyColor.B, (byte)255));
-            Raylib.DrawRectangleLinesEx(preview, 1f, RColor.White);
+            Raylib.DrawRectangleLinesEx(preview, 1f, new RColor(80, 90, 115, 255));
 
-            // Имя.
-            Raylib.DrawText(tpl.Name, (int)row.X + 8 + (int)preview.Width + 12,
-                (int)(row.Y + (row.Height - 20) / 2), 20, RColor.White);
+            int pinY = (int)preview.Y + 8;
+            int pinCount = Math.Min(tpl.Prototype.Inputs.Count, 4);
+            for (int k = 0; k < pinCount; k++)
+            {
+                var pinColor = tpl.Prototype.Inputs[k].Color ?? tpl.WireColor;
+                Raylib.DrawCircle((int)preview.X, pinY + k * 10, 3,
+                    new RColor(pinColor.R, pinColor.G, pinColor.B, (byte)255));
+            }
+            pinCount = Math.Min(tpl.Prototype.Outputs.Count, 4);
+            for (int k = 0; k < pinCount; k++)
+            {
+                var pinColor = tpl.Prototype.Outputs[k].Color ?? tpl.WireColor;
+                Raylib.DrawCircle((int)(preview.X + preview.Width), pinY + k * 10, 3,
+                    new RColor(pinColor.R, pinColor.G, pinColor.B, (byte)255));
+            }
 
-            // Кнопки.
-            DrawSmallButton(btEdit, "Edit", m, new RColor((byte)80, (byte)140, (byte)200, (byte)255));
-            DrawSmallButton(btAttach, "Attach", m, new RColor((byte)70, (byte)150, (byte)70, (byte)255));
-            DrawSmallButton(btDelete, "Delete", m, new RColor((byte)180, (byte)70, (byte)70, (byte)255));
+            int textX = (int)preview.X + (int)preview.Width + 14;
+            Raylib.DrawText(tpl.Name, textX, (int)row.Y + 12, 19, TextPrimary);
+            Raylib.DrawText($"{tpl.Prototype.Inputs.Count} in • {tpl.Prototype.Outputs.Count} out • {tpl.Prototype.Width}×{tpl.Prototype.Height}",
+                textX, (int)row.Y + 36, 13, TextSecondary);
+
+            DrawSmallButton(btEdit, "Edit", m, AccentEdit);
+            DrawSmallButton(btAttach, "Attach", m, AccentAttach);
+            DrawSmallButton(btDelete, "Delete", m, AccentDelete);
         }
 
-        // Close.
         bool ch = Raylib.CheckCollisionPointRec(m, _closeRect);
-        Raylib.DrawRectangleRec(_closeRect, ch
-            ? new RColor((byte)70, (byte)70, (byte)90, (byte)255)
-            : new RColor((byte)50, (byte)50, (byte)65, (byte)255));
-        Raylib.DrawRectangleLinesEx(_closeRect, 1f, new RColor((byte)90, (byte)90, (byte)110, (byte)255));
-        int ctw = Raylib.MeasureText("Close", 20);
+        Raylib.DrawRectangleRec(_closeRect, ch ? ButtonBgHover : ButtonBg);
+        Raylib.DrawRectangleLinesEx(_closeRect, 1f, ButtonBorder);
+        int ctw = Raylib.MeasureText("Close", 18);
         Raylib.DrawText("Close",
             (int)(_closeRect.X + (_closeRect.Width - ctw) / 2),
-            (int)(_closeRect.Y + (_closeRect.Height - 20) / 2), 20, RColor.White);
+            (int)(_closeRect.Y + (_closeRect.Height - 18) / 2), 18, TextPrimary);
     }
 
     private static void DrawSmallButton(RRect r, string label, Vector2 m, RColor accent)
     {
         bool hover = Raylib.CheckCollisionPointRec(m, r);
-        Raylib.DrawRectangleRec(r, hover ? accent : new RColor((byte)50, (byte)55, (byte)75, (byte)255));
-        Raylib.DrawRectangleLinesEx(r, 1f, new RColor((byte)110, (byte)120, (byte)150, (byte)255));
-        int tw = Raylib.MeasureText(label, 16);
+        Raylib.DrawRectangleRec(r, hover ? accent : ButtonBg);
+        Raylib.DrawRectangleLinesEx(r, 1f, hover ? new RColor(180, 200, 240, 255) : ButtonBorder);
+        int tw = Raylib.MeasureText(label, 15);
         Raylib.DrawText(label,
             (int)(r.X + (r.Width - tw) / 2),
-            (int)(r.Y + (r.Height - 16) / 2), 16, RColor.White);
+            (int)(r.Y + (r.Height - 15) / 2), 15, TextPrimary);
     }
 }

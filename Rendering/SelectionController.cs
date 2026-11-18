@@ -24,6 +24,16 @@ public sealed class SelectionController
 
     public void Clear() => _selected.Clear();
 
+    public void SelectAll(Circuit circuit) => SelectAll(circuit.Elements);
+
+    public void SelectAll(IEnumerable<Element> elements)
+    {
+        _selected.Clear();
+        foreach (var el in elements) _selected.Add(el);
+        _boxSelecting = false;
+        _additive = false;
+    }
+
     public void Toggle(Element el)
     {
         if (_selected.Contains(el)) _selected.Remove(el);
@@ -46,7 +56,8 @@ public sealed class SelectionController
         _additive = additive;
     }
 
-    public void EndBox(Circuit circuit, Layout layout, Vector2 world)
+    public void EndBox(Circuit circuit, Layout layout, Vector2 world,
+        Func<Element, bool>? include = null)
     {
         if (!_boxSelecting) return;
 
@@ -55,6 +66,7 @@ public sealed class SelectionController
 
         foreach (var el in circuit.Elements)
         {
+            if (include is not null && !include(el)) continue;
             if (!layout.TryGet(el, out var p)) continue;
             if (Raylib.CheckCollisionRecs(rect, new Rectangle(p.X, p.Y, el.Width, el.Height)))
                 _selected.Add(el);
@@ -73,7 +85,8 @@ public sealed class SelectionController
             MathF.Abs(_boxStart.Y - world.Y));
     }
 
-    public void BeginDrag(Layout layout, Circuit circuit, Element underCursor, Vector2 mouseWorld)
+    public void BeginDrag(Layout layout, Circuit circuit, Element underCursor, Vector2 mouseWorld,
+        Func<Element, bool>? include = null)
     {
         _dragStartPositions.Clear();
         _dragging = true;
@@ -92,10 +105,11 @@ public sealed class SelectionController
                 _dragStartPositions[underCursor] = new Vector2(p.X, p.Y);
         }
 
-        _hadInitialOverlap = HasOverlap(layout, circuit, _dragStartPositions);
+        _hadInitialOverlap = HasOverlap(layout, circuit, _dragStartPositions, include);
     }
 
-    public void UpdateDrag(Layout layout, Circuit circuit, Vector2 mouseWorld)
+    public void UpdateDrag(Layout layout, Circuit circuit, Vector2 mouseWorld,
+        Func<Element, bool>? include = null)
     {
         if (!_dragging || _dragStartPositions.Count == 0) return;
 
@@ -105,7 +119,7 @@ public sealed class SelectionController
         foreach (var kv in _dragStartPositions)
             candidates[kv.Key] = kv.Value + delta;
 
-        if (!_hadInitialOverlap && HasOverlap(layout, circuit, candidates))
+        if (!_hadInitialOverlap && HasOverlap(layout, circuit, candidates, include))
             return;
 
         foreach (var kv in candidates)
@@ -119,7 +133,8 @@ public sealed class SelectionController
         _hadInitialOverlap = false;
     }
 
-    private static bool HasOverlap(Layout layout, Circuit circuit, Dictionary<Element, Vector2> positions)
+    private static bool HasOverlap(Layout layout, Circuit circuit,
+        Dictionary<Element, Vector2> positions, Func<Element, bool>? include)
     {
         foreach (var kv in positions)
         {
@@ -127,6 +142,7 @@ public sealed class SelectionController
             var r = new Rectangle(kv.Value.X, kv.Value.Y, el.Width, el.Height);
             foreach (var other in circuit.Elements)
             {
+                if (include is not null && !include(other)) continue;
                 if (positions.ContainsKey(other)) continue;
                 if (!layout.TryGet(other, out var op)) continue;
                 if (Raylib.CheckCollisionRecs(r, new Rectangle(op.X, op.Y, other.Width, other.Height)))

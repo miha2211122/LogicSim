@@ -29,11 +29,6 @@ public sealed class Layout : LayoutAccessor
         if (el is ChipElement chip)
             return p.Y + (int)(chip.GetOffset(pin) * chip.Height);
 
-        // У OutElement пин Out лежит вне Outputs (терминал) — обрабатываем отдельно,
-        // иначе PinY получит count=0 и вернёт координату низа элемента.
-        if (el is OutElement oe && ReferenceEquals(oe.Out, pin))
-            return p.Y + el.Height / 2;
-
         int count = isInput ? el.Inputs.Count : el.Outputs.Count;
         int idx = PinIndex(el, pin, isInput);
         return PinY(p.Y, el.Height, count, idx);
@@ -66,18 +61,44 @@ public sealed class Layout : LayoutAccessor
             {
                 var pin = el.Inputs[i];
                 int py = PinScreenY(el, pin, isInput: true);
-                var pt = new Vector2(p.X, py);
-                float r = el is InElement ? InInputHitRadius : HitPinRadius;
-                if (Vector2.Distance(m, pt) <= r)
-                    return new PinHit(el, pin, true);
+
+                bool isBusPin = pin.BitWidth > 1;
+                if (isBusPin)
+                {
+                    float pinW = 12f;
+                    float pinH = pin.BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    if (m.X >= p.X - pinW / 2 && m.X <= p.X + pinW / 2 && m.Y >= py - pinH / 2 && m.Y <= py + pinH / 2)
+                        return new PinHit(el, pin, true);
+                }
+                else
+                {
+                    var pt = new Vector2(p.X, py);
+                    float r = el is InElement ? InInputHitRadius : HitPinRadius;
+                    if (Vector2.Distance(m, pt) <= r)
+                        return new PinHit(el, pin, true);
+                }
             }
             for (int i = 0; i < el.Outputs.Count; i++)
             {
                 var pin = el.Outputs[i];
                 int py = PinScreenY(el, pin, isInput: false);
-                var pt = new Vector2(p.X + el.Width, py);
-                if (Vector2.Distance(m, pt) <= HitPinRadius)
-                    return new PinHit(el, pin, false);
+
+                bool isBusPin = pin.BitWidth > 1;
+                if (isBusPin)
+                {
+                    float pinW = 12f;
+                    float pinH = pin.BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    if (m.X >= p.X + el.Width - pinW / 2 && m.X <= p.X + el.Width + pinW / 2 && m.Y >= py - pinH / 2 && m.Y <= py + pinH / 2)
+                        return new PinHit(el, pin, false);
+                }
+                else
+                {
+                    var pt = new Vector2(p.X + el.Width, py);
+                    if (Vector2.Distance(m, pt) <= HitPinRadius)
+                        return new PinHit(el, pin, false);
+                }
             }
         }
         return null;
@@ -95,9 +116,6 @@ public sealed class Layout : LayoutAccessor
             if (ReferenceEquals(el.Outputs[i], pin))
                 return new Vector2(p.X + el.Width, PinScreenY(el, pin, isInput: false));
 
-        if (el is OutElement oe && ReferenceEquals(oe.Out, pin))
-            return new Vector2(p.X + el.Width, PinScreenY(el, pin, isInput: false));
-
         return null;
     }
 
@@ -112,7 +130,6 @@ public sealed class Layout : LayoutAccessor
         {
             for (int i = 0; i < el.Outputs.Count; i++)
                 if (ReferenceEquals(el.Outputs[i], pin)) return i;
-            if (el is OutElement oe && ReferenceEquals(oe.Out, pin)) return 0;
         }
         return -1;
     }

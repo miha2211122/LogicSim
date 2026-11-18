@@ -34,6 +34,8 @@ public sealed class ContextMenu
     public bool ViewRequested { get; private set; }
     public bool OpenRequested { get; private set; }
     public bool BodyCustomRequested { get; private set; }
+    public bool BusWidthRequested { get; private set; }
+    public bool LayerRequested { get; private set; }
 
     private Element? _target;
     private RRect _bounds;
@@ -41,12 +43,15 @@ public sealed class ContextMenu
     private RRect _bodyCustomRect;
     private RRect _viewRect;
     private RRect _openRect;
+    private RRect _busWidthRect;
+    private RRect _layerRect;
 
     private int _x0;
     private int _bodyRowY;
 
     private bool _viewEnabled;
     private bool _openEnabled;
+    private bool _busWidthEnabled;
 
     public Element? Target => _target;
 
@@ -57,16 +62,17 @@ public sealed class ContextMenu
         ViewRequested = false;
         OpenRequested = false;
         BodyCustomRequested = false;
+        BusWidthRequested = false;
+        LayerRequested = false;
 
         bool isChip = target is ChipElement;
         _viewEnabled = isChip;
         _openEnabled = isChip;
+        _busWidthEnabled = target is BusMerger || target is BusSplitter || target is InElement || target is OutElement;
 
         int cols = Palette.Length;
         int colorW = Pad * 2 + cols * CellSize + (cols - 1) * CellGap;
-        int h = Pad * 2
-              + TitleH + CellSize + CustomH + RowGap
-              + 2 * BtnH + 1 * 6;
+        int h = Pad * 2 + TitleH + CellSize + CustomH + RowGap + 4 * BtnH + 3 * 6;
 
         _bounds = new RRect(at.X, at.Y, colorW, h);
 
@@ -93,6 +99,8 @@ public sealed class ContextMenu
 
         _viewRect = new RRect(_x0, y, BtnW, BtnH);
         _openRect = new RRect(_x0, y + BtnH + 6, BtnW, BtnH);
+        _busWidthRect = new RRect(_x0, y + (BtnH + 6) * 2, BtnW, BtnH);
+        _layerRect = new RRect(_x0, y + (BtnH + 6) * 3, BtnW, BtnH);
     }
 
     public void Close()
@@ -102,8 +110,11 @@ public sealed class ContextMenu
         ViewRequested = false;
         OpenRequested = false;
         BodyCustomRequested = false;
+        BusWidthRequested = false;
+        LayerRequested = false;
         _viewEnabled = false;
         _openEnabled = false;
+        _busWidthEnabled = false;
     }
 
     public bool Update()
@@ -149,6 +160,18 @@ public sealed class ContextMenu
                 IsOpen = false;
                 return true;
             }
+            if (_busWidthEnabled && Raylib.CheckCollisionPointRec(m, _busWidthRect))
+            {
+                BusWidthRequested = true;
+                IsOpen = false;
+                return true;
+            }
+            if (Raylib.CheckCollisionPointRec(m, _layerRect))
+            {
+                LayerRequested = true;
+                IsOpen = false;
+                return true;
+            }
         }
 
         return Raylib.CheckCollisionPointRec(m, _bounds);
@@ -181,10 +204,10 @@ public sealed class ContextMenu
         DrawCustomButton(_bodyCustomRect, "Custom...");
 
         var m = Raylib.GetMousePosition();
-        DrawActionButton(_viewRect, "View", m,
-            new RColor((byte)80, (byte)140, (byte)200, (byte)255), _viewEnabled);
-        DrawActionButton(_openRect, "Open", m,
-            new RColor((byte)150, (byte)110, (byte)200, (byte)255), _openEnabled);
+        DrawActionButton(_viewRect, "View", m, new RColor((byte)80, (byte)140, (byte)200, (byte)255), _viewEnabled);
+        DrawActionButton(_openRect, "Open", m, new RColor((byte)150, (byte)110, (byte)200, (byte)255), _openEnabled);
+        DrawActionButton(_busWidthRect, "Bus Width...", m, new RColor((byte)200, (byte)150, (byte)80, (byte)255), _busWidthEnabled);
+        DrawActionButton(_layerRect, "To Active Layer", m, new RColor((byte)100, (byte)190, (byte)170, (byte)255), true);
     }
 
     private static void DrawCustomButton(RRect r, string label)
@@ -197,10 +220,7 @@ public sealed class ContextMenu
         Raylib.DrawRectangleLinesEx(r, 1f, new RColor((byte)110, (byte)115, (byte)150, (byte)255));
 
         int tw = Raylib.MeasureText(label, 16);
-        Raylib.DrawText(label,
-            (int)(r.X + (r.Width - tw) / 2),
-            (int)(r.Y + (r.Height - 16) / 2),
-            16, RColor.White);
+        Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2), (int)(r.Y + (r.Height - 16) / 2), 16, RColor.White);
     }
 
     private static void DrawActionButton(RRect r, string label, Vector2 m, RColor accent, bool enabled)
@@ -212,10 +232,7 @@ public sealed class ContextMenu
             Raylib.DrawRectangleLinesEx(r, 1f, new RColor((byte)120, (byte)120, (byte)150, (byte)255));
 
             int tw = Raylib.MeasureText(label, 18);
-            Raylib.DrawText(label,
-                (int)(r.X + (r.Width - tw) / 2),
-                (int)(r.Y + (r.Height - 18) / 2),
-                18, RColor.White);
+            Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2), (int)(r.Y + (r.Height - 18) / 2), 18, RColor.White);
         }
         else
         {
@@ -223,10 +240,7 @@ public sealed class ContextMenu
             Raylib.DrawRectangleLinesEx(r, 1f, new RColor((byte)70, (byte)72, (byte)88, (byte)255));
 
             int tw = Raylib.MeasureText(label, 18);
-            Raylib.DrawText(label,
-                (int)(r.X + (r.Width - tw) / 2),
-                (int)(r.Y + (r.Height - 18) / 2),
-                18, new RColor((byte)120, (byte)120, (byte)135, (byte)255));
+            Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2), (int)(r.Y + (r.Height - 18) / 2), 18, new RColor((byte)120, (byte)120, (byte)135, (byte)255));
         }
     }
 

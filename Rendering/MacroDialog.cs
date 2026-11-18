@@ -12,10 +12,9 @@ public sealed class MacroDialog
     public bool IsOpen { get; private set; }
     public bool Confirmed { get; private set; }
 
-    /// <summary>Если != null — редактируем существующий шаблон (не создаём новый).</summary>
     public ChipTemplate? EditingTemplate { get; private set; }
 
-    public string Name { get; set; } = "CHIP";
+    public string Name { get; set; } = "";
     public SDColor BodyColor { get; set; } = SDColor.FromArgb(45, 50, 70);
     public SDColor WireColor { get; set; } = SDColor.FromArgb(80, 220, 80);
 
@@ -58,18 +57,45 @@ public sealed class MacroDialog
         SDColor.FromArgb(200, 200, 200),
     };
 
-    private const int Width = 760;
-    private const int Pad = 18;
-    private const int RowH = 28;
-    private const int CellSize = 22;
-    private const int CellGap = 6;
-    private const int BtnH = 40;
-    private const int PreviewW = 340;
-    private const int PreviewH = 200;
-    private const int SwatchSize = 20;
-    private const int StepBtnW = 28;
-    private const int StepW = 70;
+    private const int Width = 800;
+    private const int Pad = 24;
+    private const int RowH = 30;
+    private const int CellSize = 24;
+    private const int CellGap = 8;
+    private const int BtnH = 44;
+    private const int PreviewW = 360;
+    private const int PreviewH = 220;
+    private const int SwatchSize = 22;
+    private const int StepBtnW = 30;
+    private const int StepW = 76;
     private const int GridCellPx = 20;
+    private const int BtnGap = 12;
+
+    private static readonly RColor DialogBg = new(22, 24, 32, 250);
+    private static readonly RColor DialogBorderOuter = new(60, 80, 120, 80);
+    private static readonly RColor DialogBorderMid = new(80, 100, 150, 130);
+    private static readonly RColor DialogBorder = new(110, 140, 190, 255);
+    private static readonly RColor FieldBg = new(16, 18, 26, 255);
+    private static readonly RColor FieldBgError = new(36, 20, 20, 255);
+    private static readonly RColor FieldBorder = new(70, 85, 115, 255);
+    private static readonly RColor FieldBorderFocus = new(130, 180, 250, 255);
+    private static readonly RColor FieldBorderError = new(220, 90, 90, 255);
+    private static readonly RColor PreviewBg = new(14, 16, 22, 255);
+    private static readonly RColor AccentGreen = new(80, 190, 100, 255);
+    private static readonly RColor AccentGreenHover = new(100, 210, 120, 255);
+    private static readonly RColor AccentBlue = new(90, 150, 230, 255);
+    private static readonly RColor AccentBlueHover = new(110, 170, 250, 255);
+    private static readonly RColor ButtonBg = new(48, 54, 72, 255);
+    private static readonly RColor ButtonBgHover = new(62, 70, 92, 255);
+    private static readonly RColor ButtonBorder = new(100, 115, 150, 255);
+    private static readonly RColor ButtonDisabledBg = new(36, 40, 52, 255);
+    private static readonly RColor ButtonDisabledBorder = new(60, 70, 90, 255);
+    private static readonly RColor TextPrimary = new(240, 244, 252, 255);
+    private static readonly RColor TextSecondary = new(170, 185, 210, 255);
+    private static readonly RColor TextMuted = new(110, 125, 150, 255);
+    private static readonly RColor SectionLabel = new(150, 175, 215, 255);
+    private static readonly RColor SectionLine = new(52, 62, 85, 255);
+    private static readonly RColor DimBackdrop = new(0, 0, 0, 180);
 
     private RRect _bounds;
     private RRect _previewRect;
@@ -85,24 +111,36 @@ public sealed class MacroDialog
     private List<(RRect Row, RRect Swatch, int Index)> _outputRows = new();
 
     private int _bodyRowY, _wireRowY, _bodyRowX, _wireRowX;
+    private int _nameLabelY;
+    private int _colorsSectionY;
+    private int _sizeSectionY;
+    private int _inputsLabelY, _outputsLabelY, _outputsLabelX;
+    private int _rightPanelX, _rightPanelW;
 
     private bool _editingName;
     private int _dragInputIdx = -1;
     private int _dragOutputIdx = -1;
     private static int _counter;
 
+    private bool _nameError;
+    private float _nameErrorTimer;
+
     public void Open(MacroRecipe recipe, int defaultNumber)
     {
+        _ = defaultNumber;
+
         EditingTemplate = null;
         Recipe = recipe;
-        Name = $"CHIP{defaultNumber}";
+        Name = "";
         BodyColor = SDColor.FromArgb(45, 50, 70);
         WireColor = SDColor.FromArgb(80, 220, 80);
-        _editingName = false;
+        _editingName = true;
         Confirmed = false;
         IsOpen = true;
         _dragInputIdx = -1;
         _dragOutputIdx = -1;
+        _nameError = false;
+        _nameErrorTimer = 0f;
 
         recipe.Width = Element.DefaultWidth;
         recipe.Height = Element.DefaultHeight;
@@ -118,8 +156,6 @@ public sealed class MacroDialog
 
         var chip = tpl.Prototype;
 
-        // Создаём «виртуальный» рецепт из существующего чипа,
-        // чтобы UI работал единообразно.
         var recipe = new MacroRecipe();
         recipe.Width = chip.Width;
         recipe.Height = chip.Height;
@@ -135,7 +171,7 @@ public sealed class MacroDialog
         }
         for (int i = 0; i < chip.Outputs.Count; i++)
         {
-            recipe.Outputs.Add((new OutputPin(), chip.Outputs[i]));
+            recipe.Outputs.Add((new InputPin(), chip.Outputs[i]));
             recipe.OutputLabels.Add(chip.OutputLabels[i]);
             recipe.OutputOffsets.Add(chip.GetOffset(chip.Outputs[i]));
             recipe.OutputPinColors.Add(chip.Outputs[i].Color);
@@ -150,6 +186,8 @@ public sealed class MacroDialog
         IsOpen = true;
         _dragInputIdx = -1;
         _dragOutputIdx = -1;
+        _nameError = false;
+        _nameErrorTimer = 0f;
 
         ComputeBoundsAndLayout();
     }
@@ -161,9 +199,9 @@ public sealed class MacroDialog
         int n = Recipe.Inputs.Count;
         int m = Recipe.Outputs.Count;
 
-        int topBlock = 26 + 6 + 30 + 12 + PreviewH + 16;
-        int listsBlock = 22 + Math.Max(n, 1) * RowH + 14;
-        int h = Pad + topBlock + listsBlock + BtnH * 2 + 6 + Pad;
+        int topBlock = 26 + 8 + 18 + 34 + 16 + PreviewH + 16;
+        int listsBlock = 24 + Math.Max(Math.Max(n, m), 1) * RowH + 16;
+        int h = Pad + topBlock + listsBlock + BtnH + Pad;
         h = Math.Min(h, Raylib.GetScreenHeight() - 40);
 
         int sw = Raylib.GetScreenWidth();
@@ -181,6 +219,8 @@ public sealed class MacroDialog
         _editingName = false;
         _dragInputIdx = -1;
         _dragOutputIdx = -1;
+        _nameError = false;
+        _nameErrorTimer = 0f;
     }
 
     private void LayoutRects()
@@ -188,21 +228,27 @@ public sealed class MacroDialog
         int x = (int)_bounds.X + Pad;
         int y = (int)_bounds.Y + Pad;
 
-        y += 26 + 6;
-        _nameRect = new RRect(x, y, Width - Pad * 2, 30);
-        y += 30 + 12;
+        y += 26 + 8;
+
+        _nameLabelY = y;
+        y += 18;
+        _nameRect = new RRect(x, y, Width - Pad * 2, 34);
+        y += 34 + 16;
 
         _previewRect = new RRect(x, y, PreviewW, PreviewH);
 
         int rx = x + PreviewW + Pad;
+        _rightPanelX = rx;
+        _rightPanelW = (int)(_bounds.X + _bounds.Width - Pad) - rx;
 
+        _colorsSectionY = y;
         _bodyRowX = rx;
-        _bodyRowY = y + 22 + 6;
+        _bodyRowY = y + 26 + 6;
         _wireRowX = rx;
-        _wireRowY = y + 22 + 6 + CellSize + 22;
+        _wireRowY = y + 26 + 6 + CellSize + 24;
 
-        int sw2 = y + 22 + 6 + (CellSize + 22) * 2 + 4;
-
+        _sizeSectionY = y + 26 + 6 + (CellSize + 24) * 2 - 4;
+        int sw2 = _sizeSectionY + 26;
         _wMinus = new RRect(rx, sw2, StepBtnW, RowH);
         _wValue = new RRect(rx + StepBtnW + 4, sw2, StepW, RowH);
         _wPlus = new RRect(rx + StepBtnW + 4 + StepW + 4, sw2, StepBtnW, RowH);
@@ -215,45 +261,61 @@ public sealed class MacroDialog
 
         int halfW = (Width - Pad * 3) / 2;
 
+        _inputsLabelY = y + 4;
+        _outputsLabelY = y + 4;
+        _outputsLabelX = x + halfW + Pad;
+
         _inputRows.Clear();
-        int iy = y + 22;
+        int iy = y + 24;
         if (Recipe is not null)
         {
             for (int i = 0; i < Recipe.Inputs.Count; i++)
             {
                 var row = new RRect(x, iy, halfW, RowH - 4);
-                var sw = new RRect(x + halfW - SwatchSize - 8, iy + 2, SwatchSize, SwatchSize);
+                var sw = new RRect(x + halfW - SwatchSize - 8, iy + (RowH - 4 - SwatchSize) / 2, SwatchSize, SwatchSize);
                 _inputRows.Add((row, sw, i));
                 iy += RowH;
             }
         }
 
         _outputRows.Clear();
-        int ox = x + halfW + Pad;
-        int oy = y + 22;
+        int oy = y + 24;
         if (Recipe is not null)
         {
             for (int i = 0; i < Recipe.Outputs.Count; i++)
             {
-                var row = new RRect(ox, oy, halfW, RowH - 4);
-                var sw = new RRect(ox + halfW - SwatchSize - 8, oy + 2, SwatchSize, SwatchSize);
+                var row = new RRect(_outputsLabelX, oy, halfW, RowH - 4);
+                var sw = new RRect(_outputsLabelX + halfW - SwatchSize - 8, oy + (RowH - 4 - SwatchSize) / 2, SwatchSize, SwatchSize);
                 _outputRows.Add((row, sw, i));
                 oy += RowH;
             }
         }
 
         int rowsCount = Math.Max(Recipe?.Inputs.Count ?? 1, Recipe?.Outputs.Count ?? 1);
-        int listsEnd = y + 22 + rowsCount * RowH + 14;
+        int buttonsY = y + 24 + rowsCount * RowH + 16;
 
-        int halfBtn = (Width - 3 * Pad) / 2;
-        _resetRect = new RRect((int)_bounds.X + Pad, listsEnd, halfBtn, BtnH);
-        _createRect = new RRect((int)_bounds.X + Pad + halfBtn + Pad, listsEnd, halfBtn, BtnH);
-        _cancelRect = new RRect((int)_bounds.X + Pad, listsEnd + BtnH + 6, halfBtn, BtnH);
+        int btnW = (Width - Pad * 2 - BtnGap * 2) / 3;
+        _resetRect = new RRect(x, buttonsY, btnW, BtnH);
+        _cancelRect = new RRect(x + btnW + BtnGap, buttonsY, btnW, BtnH);
+        _createRect = new RRect(x + (btnW + BtnGap) * 2, buttonsY, btnW, BtnH);
     }
+
+    private static bool IsAllowedNameChar(char ch)
+        => (ch >= 'a' && ch <= 'z')
+        || (ch >= 'A' && ch <= 'Z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '_'
+        || ch == '-';
 
     public void Update()
     {
         if (!IsOpen || Recipe is null) return;
+
+        if (_nameErrorTimer > 0f)
+        {
+            _nameErrorTimer -= Raylib.GetFrameTime();
+            if (_nameErrorTimer <= 0f) _nameError = false;
+        }
 
         if (Raylib.IsKeyPressed(KeyboardKey.Escape)) { Close(); return; }
 
@@ -274,9 +336,7 @@ public sealed class MacroDialog
 
         if (clicked)
         {
-            bool inside = Raylib.CheckCollisionPointRec(m, _nameRect);
-            _editingName = inside;
-            if (inside && Name.StartsWith("CHIP") && Name.Length <= 6) Name = "";
+            _editingName = Raylib.CheckCollisionPointRec(m, _nameRect);
         }
 
         if (clicked)
@@ -339,8 +399,7 @@ public sealed class MacroDialog
             }
             if (Raylib.CheckCollisionPointRec(m, _createRect))
             {
-                Confirmed = true;
-                IsOpen = false;
+                TryConfirm();
                 return;
             }
             if (Raylib.CheckCollisionPointRec(m, _cancelRect)) { Close(); return; }
@@ -352,12 +411,34 @@ public sealed class MacroDialog
             while ((c = Raylib.GetCharPressed()) != 0)
             {
                 char ch = (char)c;
-                if (Name.Length < 14 && (char.IsLetterOrDigit(ch) || ch == '_' || ch == '-'))
+                if (Name.Length < 14 && IsAllowedNameChar(ch))
+                {
                     Name += ch;
+                    _nameError = false;
+                    _nameErrorTimer = 0f;
+                }
             }
             if (Raylib.IsKeyPressed(KeyboardKey.Backspace) && Name.Length > 0)
                 Name = Name.Substring(0, Name.Length - 1);
         }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.Enter))
+            TryConfirm();
+    }
+
+    private void TryConfirm()
+    {
+        Name = Name.Trim();
+
+        if (string.IsNullOrWhiteSpace(Name))
+        {
+            _nameError = true;
+            _nameErrorTimer = 1.5f;
+            return;
+        }
+
+        Confirmed = true;
+        IsOpen = false;
     }
 
     private static SDColor? NextColor(SDColor? current)
@@ -376,16 +457,21 @@ public sealed class MacroDialog
         if (Recipe is null) return false;
         var (cx, cy, w, h, scale) = PreviewChipRect();
         float pinR = Layout.VisualPinRadius * scale;
-        float hitR = pinR + 6f;
 
         for (int i = 0; i < Recipe.Inputs.Count; i++)
         {
             float py = cy + Recipe.InputOffsets[i] * h;
+            int bitWidth = Recipe.Inputs[i].ext.BitWidth;
+            float hitR = bitWidth > 1 ? Math.Max(10f, bitWidth * 2f) * scale / 2f + 6f : pinR + 6f;
+
             if (Vector2.Distance(m, new Vector2(cx, py)) <= hitR) { _dragInputIdx = i; return true; }
         }
         for (int i = 0; i < Recipe.Outputs.Count; i++)
         {
             float py = cy + Recipe.OutputOffsets[i] * h;
+            int bitWidth = Recipe.Outputs[i].ext.BitWidth;
+            float hitR = bitWidth > 1 ? Math.Max(10f, bitWidth * 2f) * scale / 2f + 6f : pinR + 6f;
+
             if (Vector2.Distance(m, new Vector2(cx + w, py)) <= hitR) { _dragOutputIdx = i; return true; }
         }
         return false;
@@ -408,12 +494,12 @@ public sealed class MacroDialog
     {
         if (Recipe is null) return (0, 0, 0, 0, 1f);
 
-        const int TopLabelH = 22;
-        const int BottomHintH = 20;
-        float availW = _previewRect.Width;
+        const int TopLabelH = 26;
+        const int BottomHintH = 22;
+        float availW = _previewRect.Width - 24;
         float availH = _previewRect.Height - TopLabelH - BottomHintH;
 
-        float scale = MathF.Min((float)availW / Recipe.Width, availH / Recipe.Height) * 0.9f;
+        float scale = MathF.Min(availW / Recipe.Width, availH / Recipe.Height) * 0.88f;
         if (scale <= 0f) scale = 1f;
 
         float w = Recipe.Width * scale;
@@ -438,45 +524,66 @@ public sealed class MacroDialog
     {
         if (!IsOpen || Recipe is null) return;
 
-        Raylib.DrawRectangle(0, 0, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(),
-            new RColor((byte)0, (byte)0, (byte)0, (byte)160));
-        Raylib.DrawRectangleRec(_bounds, new RColor((byte)30, (byte)32, (byte)44, (byte)255));
-        Raylib.DrawRectangleLinesEx(_bounds, 2f, new RColor((byte)120, (byte)140, (byte)180, (byte)255));
+        Raylib.DrawRectangle(0, 0, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), DimBackdrop);
+
+        var glow1 = new RRect(_bounds.X - 3, _bounds.Y - 3, _bounds.Width + 6, _bounds.Height + 6);
+        var glow2 = new RRect(_bounds.X - 1, _bounds.Y - 1, _bounds.Width + 2, _bounds.Height + 2);
+        Raylib.DrawRectangleLinesEx(glow1, 1f, DialogBorderOuter);
+        Raylib.DrawRectangleLinesEx(glow2, 1f, DialogBorderMid);
+
+        Raylib.DrawRectangleRec(_bounds, DialogBg);
+        Raylib.DrawRectangleLinesEx(_bounds, 2f, DialogBorder);
 
         int x = (int)_bounds.X + Pad;
         int y = (int)_bounds.Y + Pad;
 
-        string title = EditingTemplate is null ? "New Macro" : $"Edit Macro: {EditingTemplate.Name}";
-        Raylib.DrawText(title, x, y, 26, RColor.White);
-        y += 26 + 6;
+        string title = EditingTemplate is null ? "Create Macro" : $"Edit Macro: {EditingTemplate.Name}";
+        Raylib.DrawText(title, x, y, 26, TextPrimary);
+        Raylib.DrawRectangle(x, y + 32, 64, 2, AccentBlue);
 
-        Raylib.DrawRectangleRec(_nameRect, new RColor((byte)20, (byte)22, (byte)30, (byte)255));
-        Raylib.DrawRectangleLinesEx(_nameRect, _editingName ? 2f : 1f,
-            _editingName ? RColor.Yellow : new RColor((byte)80, (byte)80, (byte)100, (byte)255));
-        string shown = Name;
-        if (_editingName && ((int)(Raylib.GetTime() * 2) % 2 == 0)) shown += "_";
-        Raylib.DrawText(shown, x + 8, y + 5, 20, RColor.White);
+        Raylib.DrawText("MACRO NAME", x, _nameLabelY, 13, SectionLabel);
+
+        var fieldBgColor = _nameError ? FieldBgError : FieldBg;
+        Raylib.DrawRectangleRec(_nameRect, fieldBgColor);
+
+        var fieldBorder = _nameError ? FieldBorderError
+                        : _editingName ? FieldBorderFocus
+                        : FieldBorder;
+        Raylib.DrawRectangleLinesEx(_nameRect, (_editingName || _nameError) ? 2f : 1f, fieldBorder);
+
+        string displayName;
+        RColor nameColor;
+        if (string.IsNullOrEmpty(Name))
+        {
+            displayName = "Enter macro name...";
+            nameColor = TextMuted;
+        }
+        else
+        {
+            displayName = Name;
+            if (_editingName && ((int)(Raylib.GetTime() * 2) % 2 == 0)) displayName += "_";
+            nameColor = TextPrimary;
+        }
+        Raylib.DrawText(displayName, x + 12, (int)_nameRect.Y + 8, 20, nameColor);
 
         DrawPreview();
 
-        Raylib.DrawText("Body", _bodyRowX, _bodyRowY - 22, 16, RColor.LightGray);
+        DrawSectionHeader(_rightPanelX, _colorsSectionY, "COLORS", _rightPanelW);
+
+        Raylib.DrawText("Body", _bodyRowX, _bodyRowY - 20, 14, TextSecondary);
         DrawColorRow(_bodyRowX, _bodyRowY, BodyColor, BodyPalette);
 
-        Raylib.DrawText("Wire", _wireRowX, _wireRowY - 22, 16, RColor.LightGray);
+        Raylib.DrawText("Wire", _wireRowX, _wireRowY - 20, 14, TextSecondary);
         DrawColorRow(_wireRowX, _wireRowY, WireColor, WirePalette);
 
+        DrawSectionHeader(_rightPanelX, _sizeSectionY, "SIZE", _rightPanelW);
+
         var m = Raylib.GetMousePosition();
+        DrawStepper("W", _wMinus, _wValue, _wPlus, Recipe.Width, m);
+        DrawStepper("H", _hMinus, _hValue, _hPlus, Recipe.Height, m);
 
-        DrawStepper("Width", _wMinus, _wValue, _wPlus, Recipe.Width, m);
-        DrawStepper("Height", _hMinus, _hValue, _hPlus, Recipe.Height, m);
-
-        int listsY = _inputRows.Count > 0
-            ? (int)_inputRows[0].Row.Y - 22
-            : (int)_previewRect.Y + PreviewH + 16;
-
-        Raylib.DrawText($"Inputs ({Recipe.Inputs.Count})", x, listsY, 16, RColor.LightGray);
-        int ox = _outputRows.Count > 0 ? (int)_outputRows[0].Row.X : x + 300;
-        Raylib.DrawText($"Outputs ({Recipe.Outputs.Count})", ox, listsY, 16, RColor.LightGray);
+        Raylib.DrawText($"INPUTS ({Recipe.Inputs.Count})", x, _inputsLabelY, 13, SectionLabel);
+        Raylib.DrawText($"OUTPUTS ({Recipe.Outputs.Count})", _outputsLabelX, _outputsLabelY, 13, SectionLabel);
 
         for (int i = 0; i < _inputRows.Count; i++)
         {
@@ -491,60 +598,79 @@ public sealed class MacroDialog
                 Recipe.OutputOffsets[idx], Recipe.OutputPinColors[idx], sw);
         }
 
-        DrawButton(_resetRect, "Reset", m, new RColor((byte)120, (byte)120, (byte)150, (byte)255));
+        DrawButton(_resetRect, "Reset", m, ButtonBg, ButtonBgHover, ButtonBorder, TextPrimary);
+        DrawButton(_cancelRect, "Cancel", m, ButtonBg, ButtonBgHover, ButtonBorder, TextPrimary);
+
         string okLabel = EditingTemplate is null ? "Create" : "Apply";
-        RColor okColor = EditingTemplate is null
-            ? new RColor((byte)70, (byte)150, (byte)70, (byte)255)
-            : new RColor((byte)80, (byte)120, (byte)200, (byte)255);
-        DrawButton(_createRect, okLabel, m, okColor);
-        DrawButton(_cancelRect, "Cancel", m, new RColor((byte)50, (byte)50, (byte)65, (byte)255));
+        bool canConfirm = !string.IsNullOrWhiteSpace(Name);
+
+        if (canConfirm)
+        {
+            RColor primaryBg = EditingTemplate is null ? AccentGreen : AccentBlue;
+            RColor primaryHover = EditingTemplate is null ? AccentGreenHover : AccentBlueHover;
+            RColor primaryBorder = EditingTemplate is null
+                ? new RColor(140, 220, 150, 255)
+                : new RColor(140, 190, 255, 255);
+            DrawButton(_createRect, okLabel, m, primaryBg, primaryHover, primaryBorder, RColor.White);
+        }
+        else
+        {
+            DrawButtonDisabled(_createRect, okLabel, TextMuted);
+        }
+    }
+
+    private static void DrawSectionHeader(int x, int y, string text, int width)
+    {
+        Raylib.DrawText(text, x, y, 13, SectionLabel);
+        int tw = Raylib.MeasureText(text, 13);
+        Raylib.DrawLine(x + tw + 10, y + 8, x + width, y + 8, SectionLine);
     }
 
     private static void DrawStepper(string label, RRect minus, RRect value, RRect plus, int val, Vector2 m)
     {
-        Raylib.DrawText(label, (int)minus.X, (int)minus.Y - 20, 14, RColor.LightGray);
+        Raylib.DrawText(label, (int)minus.X, (int)minus.Y - 20, 13, SectionLabel);
         DrawSmallBtn(minus, "-", m);
         DrawSmallBtn(plus, "+", m);
 
-        Raylib.DrawRectangleRec(value, new RColor((byte)20, (byte)22, (byte)30, (byte)255));
-        Raylib.DrawRectangleLinesEx(value, 1f, new RColor((byte)70, (byte)80, (byte)100, (byte)255));
+        Raylib.DrawRectangleRec(value, FieldBg);
+        Raylib.DrawRectangleLinesEx(value, 1f, FieldBorder);
         string s = val.ToString();
         int tw = Raylib.MeasureText(s, 18);
         Raylib.DrawText(s, (int)(value.X + (value.Width - tw) / 2),
-            (int)(value.Y + (value.Height - 18) / 2), 18, RColor.White);
+            (int)(value.Y + (value.Height - 18) / 2), 18, TextPrimary);
     }
 
     private static void DrawSmallBtn(RRect r, string label, Vector2 m)
     {
         bool hover = Raylib.CheckCollisionPointRec(m, r);
-        Raylib.DrawRectangleRec(r, hover
-            ? new RColor((byte)80, (byte)90, (byte)120, (byte)255)
-            : new RColor((byte)50, (byte)55, (byte)75, (byte)255));
-        Raylib.DrawRectangleLinesEx(r, 1f, new RColor((byte)110, (byte)120, (byte)150, (byte)255));
+        Raylib.DrawRectangleRec(r, hover ? ButtonBgHover : ButtonBg);
+        Raylib.DrawRectangleLinesEx(r, 1f, ButtonBorder);
         int tw = Raylib.MeasureText(label, 18);
-        Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2), (int)(r.Y + (r.Height - 18) / 2), 18, RColor.White);
+        Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2),
+            (int)(r.Y + (r.Height - 18) / 2), 18, TextPrimary);
     }
 
     private void DrawPreview()
     {
-        Raylib.DrawRectangleRec(_previewRect, new RColor((byte)18, (byte)20, (byte)28, (byte)255));
-        Raylib.DrawRectangleLinesEx(_previewRect, 1f, new RColor((byte)70, (byte)80, (byte)110, (byte)255));
+        Raylib.DrawRectangleRec(_previewRect, PreviewBg);
+        Raylib.DrawRectangleLinesEx(_previewRect, 1f, SectionLine);
 
         if (Recipe is null) return;
 
-        string sizeLbl = $"{Recipe.Width} x {Recipe.Height} px";
-        int sw = Raylib.MeasureText(sizeLbl, 16);
+        string sizeLbl = $"{Recipe.Width} × {Recipe.Height} px";
+        int sw = Raylib.MeasureText(sizeLbl, 14);
         Raylib.DrawText(sizeLbl,
             (int)(_previewRect.X + (_previewRect.Width - sw) / 2),
-            (int)_previewRect.Y + 4,
-            16, new RColor((byte)180, (byte)200, (byte)230, (byte)255));
+            (int)_previewRect.Y + 6,
+            14, TextSecondary);
 
         var (cx, cy, w, h, scale) = PreviewChipRect();
         var body = new RColor(BodyColor.R, BodyColor.G, BodyColor.B, (byte)255);
 
+        Raylib.DrawRectangle((int)cx + 3, (int)cy + 3, (int)w, (int)h, new RColor(0, 0, 0, 60));
         Raylib.DrawRectangle((int)cx, (int)cy, (int)w, (int)h, body);
 
-        var gridColor = new RColor((byte)255, (byte)255, (byte)255, (byte)30);
+        var gridColor = new RColor(255, 255, 255, 28);
         float cellPx = GridCellPx * scale;
 
         if (cellPx >= 4f)
@@ -557,12 +683,14 @@ public sealed class MacroDialog
 
         Raylib.DrawRectangleLines((int)cx, (int)cy, (int)w, (int)h, RColor.White);
 
-        int tw = Raylib.MeasureText(Name, 22);
-        Raylib.DrawText(Name, (int)(cx + (w - tw) / 2), (int)(cy + h / 2 - 11), 22, RColor.White);
+        string label = string.IsNullOrEmpty(Name) ? "?" : Name;
+        RColor labelColor = string.IsNullOrEmpty(Name) ? new RColor(200, 200, 200, 140) : RColor.White;
+        int tw = Raylib.MeasureText(label, 22);
+        Raylib.DrawText(label, (int)(cx + (w - tw) / 2), (int)(cy + h / 2 - 11), 22, labelColor);
 
         float pinR = Layout.VisualPinRadius * scale;
         var defaultColor = new RColor(WireColor.R, WireColor.G, WireColor.B, (byte)255);
-        var lblColor = new RColor((byte)200, (byte)230, (byte)255, (byte)220);
+        var lblColor = new RColor(200, 230, 255, 220);
 
         for (int i = 0; i < Recipe.Inputs.Count; i++)
         {
@@ -570,9 +698,25 @@ public sealed class MacroDialog
             bool dragged = i == _dragInputIdx;
             var c = Recipe.InputPinColors[i] is SDColor ic
                 ? new RColor(ic.R, ic.G, ic.B, (byte)255) : defaultColor;
-            Raylib.DrawCircle((int)cx, (int)py, pinR, c);
-            if (dragged) Raylib.DrawCircleLines((int)cx, (int)py, pinR + 3, RColor.Yellow);
-            Raylib.DrawText(Recipe.InputLabels[i], (int)(cx + pinR + 6), (int)(py - 8), 14, lblColor);
+
+            int bitWidth = Recipe.Inputs[i].ext.BitWidth;
+            bool isBus = bitWidth > 1;
+
+            if (isBus)
+            {
+                float pinSize = Math.Max(10f, bitWidth * 2f) * scale;
+                Raylib.DrawRectangle((int)(cx - pinSize / 2), (int)(py - pinSize / 2), (int)pinSize, (int)pinSize, c);
+                Raylib.DrawRectangleLines((int)(cx - pinSize / 2), (int)(py - pinSize / 2), (int)pinSize, (int)pinSize, new RColor(0, 0, 0, 120));
+                if (dragged) Raylib.DrawRectangleLines((int)(cx - pinSize / 2 - 3), (int)(py - pinSize / 2 - 3), (int)pinSize + 6, (int)pinSize + 6, RColor.Yellow);
+            }
+            else
+            {
+                Raylib.DrawCircle((int)cx, (int)py, pinR, c);
+                Raylib.DrawCircleLines((int)cx, (int)py, pinR, new RColor(0, 0, 0, 120));
+                if (dragged) Raylib.DrawCircleLines((int)cx, (int)py, pinR + 3, RColor.Yellow);
+            }
+
+            Raylib.DrawText(Recipe.InputLabels[i], (int)(cx + (isBus ? pinR * 2 : pinR) + 6), (int)(py - 8), 14, lblColor);
         }
         for (int i = 0; i < Recipe.Outputs.Count; i++)
         {
@@ -580,31 +724,33 @@ public sealed class MacroDialog
             bool dragged = i == _dragOutputIdx;
             var c = Recipe.OutputPinColors[i] is SDColor oc
                 ? new RColor(oc.R, oc.G, oc.B, (byte)255) : defaultColor;
-            Raylib.DrawCircle((int)(cx + w), (int)py, pinR, c);
-            if (dragged) Raylib.DrawCircleLines((int)(cx + w), (int)py, pinR + 3, RColor.Yellow);
+
+            int bitWidth = Recipe.Outputs[i].ext.BitWidth;
+            bool isBus = bitWidth > 1;
+
+            if (isBus)
+            {
+                float pinSize = Math.Max(10f, bitWidth * 2f) * scale;
+                Raylib.DrawRectangle((int)(cx + w - pinSize / 2), (int)(py - pinSize / 2), (int)pinSize, (int)pinSize, c);
+                Raylib.DrawRectangleLines((int)(cx + w - pinSize / 2), (int)(py - pinSize / 2), (int)pinSize, (int)pinSize, new RColor(0, 0, 0, 120));
+                if (dragged) Raylib.DrawRectangleLines((int)(cx + w - pinSize / 2 - 3), (int)(py - pinSize / 2 - 3), (int)pinSize + 6, (int)pinSize + 6, RColor.Yellow);
+            }
+            else
+            {
+                Raylib.DrawCircle((int)(cx + w), (int)py, pinR, c);
+                Raylib.DrawCircleLines((int)(cx + w), (int)py, pinR, new RColor(0, 0, 0, 120));
+                if (dragged) Raylib.DrawCircleLines((int)(cx + w), (int)py, pinR + 3, RColor.Yellow);
+            }
+
             string lbl = Recipe.OutputLabels[i];
             int lw = Raylib.MeasureText(lbl, 14);
-            Raylib.DrawText(lbl, (int)(cx + w - pinR - 6 - lw), (int)(py - 8), 14, lblColor);
+            Raylib.DrawText(lbl, (int)(cx + w - (isBus ? pinR * 2 : pinR) - 6 - lw), (int)(py - 8), 14, lblColor);
         }
 
-        int lx = (int)_previewRect.X + 8;
-        int ly = (int)(_previewRect.Y + _previewRect.Height - 20);
-        var rulerBg = new RColor((byte)40, (byte)45, (byte)60, (byte)255);
-        var rulerLine = new RColor((byte)180, (byte)200, (byte)230, (byte)255);
-
-        int rcw = (int)(GridCellPx * scale);
-        if (rcw < 2) rcw = 2;
-        int totalW = rcw * 3;
-        Raylib.DrawRectangle(lx, ly, totalW, 10, rulerBg);
-        for (int i = 0; i <= 3; i++)
-            Raylib.DrawLine(lx + i * rcw, ly, lx + i * rcw, ly + 10, rulerLine);
-        Raylib.DrawText($"{GridCellPx}px", lx + totalW + 6, ly - 3, 12,
-            new RColor((byte)150, (byte)160, (byte)180, (byte)255));
-
-        Raylib.DrawText("drag pin along the side",
-            (int)_previewRect.X + (int)_previewRect.Width - 168,
+        Raylib.DrawText("drag pins along sides to reposition",
+            (int)_previewRect.X + 12,
             (int)(_previewRect.Y + _previewRect.Height - 20),
-            12, new RColor((byte)120, (byte)130, (byte)150, (byte)255));
+            12, TextMuted);
     }
 
     private static void DrawColorRow(int x, int y, SDColor selected, SDColor[] palette)
@@ -615,8 +761,20 @@ public sealed class MacroDialog
             var rl = new RColor(c.R, c.G, c.B, c.A);
             var r = new RRect(x + i * (CellSize + CellGap), y, CellSize, CellSize);
             Raylib.DrawRectangleRec(r, rl);
-            Raylib.DrawRectangleLinesEx(r, selected == c ? 2f : 1f,
-                selected == c ? RColor.White : new RColor((byte)60, (byte)60, (byte)80, (byte)255));
+
+            bool isSelected = selected.R == c.R && selected.G == c.G && selected.B == c.B;
+
+            if (isSelected)
+            {
+                Raylib.DrawRectangleLinesEx(r, 2f, RColor.White);
+                Raylib.DrawRectangleLinesEx(
+                    new RRect(r.X + 2, r.Y + 2, r.Width - 4, r.Height - 4),
+                    1f, new RColor(0, 0, 0, 180));
+            }
+            else
+            {
+                Raylib.DrawRectangleLinesEx(r, 1f, new RColor(60, 60, 80, 255));
+            }
         }
     }
 
@@ -625,21 +783,20 @@ public sealed class MacroDialog
     {
         bool hover = Raylib.CheckCollisionPointRec(m, row);
         var bg = dragged
-            ? new RColor((byte)60, (byte)60, (byte)90, (byte)255)
-            : hover ? new RColor((byte)50, (byte)55, (byte)75, (byte)255)
-                    : new RColor((byte)35, (byte)38, (byte)52, (byte)255);
+            ? new RColor(60, 70, 110, 255)
+            : hover ? new RColor(46, 52, 70, 255)
+                    : new RColor(34, 38, 52, 255);
 
         Raylib.DrawRectangleRec(row, bg);
         Raylib.DrawRectangleLinesEx(row, dragged ? 2f : 1f,
-            dragged ? RColor.Yellow : new RColor((byte)70, (byte)80, (byte)110, (byte)255));
+            dragged ? RColor.Yellow : new RColor(60, 70, 95, 255));
 
-        Raylib.DrawText(label, (int)row.X + 8, (int)(row.Y + (row.Height - 18) / 2), 18, RColor.White);
+        Raylib.DrawText(label, (int)row.X + 10, (int)(row.Y + (row.Height - 18) / 2), 17, TextPrimary);
 
-        string y = $"y:{offset:0.00}";
-        int yw = Raylib.MeasureText(y, 12);
-        Raylib.DrawText(y, (int)(row.X + row.Width - yw - SwatchSize - 18),
-            (int)(row.Y + (row.Height - 12) / 2), 12,
-            new RColor((byte)150, (byte)160, (byte)180, (byte)255));
+        string yStr = $"y:{offset:0.00}";
+        int yw = Raylib.MeasureText(yStr, 12);
+        Raylib.DrawText(yStr, (int)(row.X + row.Width - yw - SwatchSize - 20),
+            (int)(row.Y + (row.Height - 12) / 2), 12, TextMuted);
 
         bool swatchHover = Raylib.CheckCollisionPointRec(m, swatch);
         if (pinColor is SDColor pc)
@@ -648,22 +805,33 @@ public sealed class MacroDialog
         }
         else
         {
-            Raylib.DrawRectangleRec(swatch, new RColor((byte)30, (byte)30, (byte)40, (byte)255));
+            Raylib.DrawRectangleRec(swatch, new RColor(24, 26, 36, 255));
             Raylib.DrawLine((int)swatch.X + 3, (int)swatch.Y + (int)swatch.Height - 3,
                             (int)swatch.X + (int)swatch.Width - 3, (int)swatch.Y + 3,
-                            new RColor((byte)180, (byte)90, (byte)90, (byte)255));
+                            new RColor(160, 80, 80, 220));
         }
         Raylib.DrawRectangleLinesEx(swatch, swatchHover ? 2f : 1f,
-            swatchHover ? RColor.White : new RColor((byte)100, (byte)110, (byte)140, (byte)255));
+            swatchHover ? RColor.White : new RColor(90, 100, 130, 255));
     }
 
-    private static void DrawButton(RRect r, string label, Vector2 m, RColor accent)
+    private static void DrawButton(RRect r, string label, Vector2 m,
+                                   RColor bg, RColor hoverBg, RColor border, RColor textColor)
     {
         bool hover = Raylib.CheckCollisionPointRec(m, r);
-        Raylib.DrawRectangleRec(r, hover ? accent : new RColor((byte)50, (byte)50, (byte)70, (byte)255));
-        Raylib.DrawRectangleLinesEx(r, 1f, new RColor((byte)120, (byte)120, (byte)150, (byte)255));
+        Raylib.DrawRectangleRec(r, hover ? hoverBg : bg);
+        Raylib.DrawRectangleLinesEx(r, 1.5f, border);
         int tw = Raylib.MeasureText(label, 18);
-        Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2), (int)(r.Y + (r.Height - 18) / 2), 18, RColor.White);
+        Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2),
+            (int)(r.Y + (r.Height - 18) / 2), 18, textColor);
+    }
+
+    private static void DrawButtonDisabled(RRect r, string label, RColor textColor)
+    {
+        Raylib.DrawRectangleRec(r, ButtonDisabledBg);
+        Raylib.DrawRectangleLinesEx(r, 1f, ButtonDisabledBorder);
+        int tw = Raylib.MeasureText(label, 18);
+        Raylib.DrawText(label, (int)(r.X + (r.Width - tw) / 2),
+            (int)(r.Y + (r.Height - 18) / 2), 18, textColor);
     }
 
     public static int NextNumber() => ++_counter;

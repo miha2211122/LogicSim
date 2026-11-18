@@ -8,65 +8,142 @@ namespace LogicSim.Game.Rendering;
 
 public sealed class GameRenderer
 {
-    public void Draw(Circuit circuit, Layout layout)
+    public void Draw(Circuit circuit, Layout layout, LayerSet? layers = null)
     {
+        bool Visible(Element el) => layers is null || layers.IsVisible(el.Layer);
+
+        bool WireVisible(Wire w)
+        {
+            if (layers is null) return true;
+            if (!layers.IsVisible(w.Layer)) return false;
+            var from = circuit.OwnerOf(w.From);
+            var to = circuit.OwnerOf(w.To);
+            return from is not null && to is not null && Visible(from) && Visible(to);
+        }
+
         foreach (var wire in circuit.Wires)
         {
-            var owner1 = circuit.Elements.FirstOrDefault(e => e.Outputs.Contains(wire.From));
-            var owner2 = circuit.Elements.FirstOrDefault(e => e.Inputs.Contains(wire.To));
+            if (!WireVisible(wire)) continue;
+            var owner1 = circuit.OwnerOf(wire.From);
+            var owner2 = circuit.OwnerOf(wire.To);
             if (owner1 is null || owner2 is null) continue;
 
             var p1 = layout.PinPosition(owner1, wire.From);
             var p2 = layout.PinPosition(owner2, wire.To);
             if (p1 is null || p2 is null) continue;
 
-            var points = new List<Vector2> { p1.Value };
-            points.AddRange(wire.Waypoints);
-            points.Add(p2.Value);
+            var rawPoints = new List<Vector2> { p1.Value };
+            rawPoints.AddRange(wire.Waypoints);
+            rawPoints.Add(p2.Value);
 
             var net = circuit.NetStateOf(wire);
             var baseColor = wire.From.Color ?? owner1.WireColor;
 
-            switch (net)
+            if (wire.IsBus)
             {
-                case LogicState.Conflict:
-                    DrawHazardPolyline(points, 3f);
-                    break;
-                case LogicState.HighZ:
-                    DrawDashedPolyline(points, 3f, new RColor((byte)150, (byte)150, (byte)160, (byte)255));
-                    break;
-                default:
-                    {
-                        var color = net == LogicState.One ? ToRaylib(baseColor) : Darken(baseColor, 0.45f);
-                        for (int i = 0; i + 1 < points.Count; i++)
-                            Raylib.DrawLineEx(points[i], points[i + 1], 3f, color);
-                        break;
-                    }
+                int strips = Math.Max(wire.From.BitWidth, wire.To.BitWidth);
+                if (strips <= 1) strips = 8;
+                DrawRibbonCable(rawPoints, wire.To.BusStates, baseColor, strips);
+                continue;
             }
 
-            foreach (var wp in wire.Waypoints)
-            {
-                switch (net)
-                {
-                    case LogicState.Conflict:
-                        Raylib.DrawCircleV(wp, 5, new RColor((byte)220, (byte)40, (byte)40, (byte)255));
-                        break;
-                    case LogicState.HighZ:
-                        Raylib.DrawCircleV(wp, 5, new RColor((byte)150, (byte)150, (byte)160, (byte)255));
-                        break;
-                    default:
-                        {
-                            var color = net == LogicState.One ? ToRaylib(baseColor) : Darken(baseColor, 0.45f);
-                            Raylib.DrawCircleV(wp, 5, color);
-                            break;
-                        }
-                }
-            }
+            var color = net == LogicState.One ? ToRaylib(baseColor) : Darken(baseColor, 0.45f);
+            for (int i = 0; i + 1 < rawPoints.Count; i++)
+                Raylib.DrawLineEx(rawPoints[i], rawPoints[i + 1], 3f, color);
         }
 
         foreach (var el in circuit.Elements)
-            if (layout.TryGet(el, out var p))
+            if (Visible(el) && layout.TryGet(el, out var p))
                 DrawElement(el, p.X, p.Y, circuit, layout);
+    }
+
+    private List<Vector2> RemoveDuplicatePoints(List<Vector2> points)
+    {
+        var result = new List<Vector2>();
+        if (points.Count == 0) return result;
+        result.Add(points[0]);
+        for (int i = 1; i < points.Count; i++)
+        {
+            if (Vector2.DistanceSquared(points[i], result[^1]) > 0.01f)
+                result.Add(points[i]);
+        }
+        return result;
+    }
+
+    private void DrawRibbonCable(List<Vector2> points, LogicState[] states, SDColor baseColor, int bitWidth)
+    {
+        points = RemoveDuplicatePoints(points);
+        if (points.Count < 2) return;
+
+        float stripThickness = 2f;
+        int strips = Math.Max(2, bitWidth);
+        float totalThickness = strips * stripThickness;
+
+        var bgColor = new RColor((byte)15, (byte)20, (byte)15, (byte)255);
+        for (int i = 0; i + 1 < points.Count; i++)
+            Raylib.DrawLineEx(points[i], points[i + 1], totalThickness + 2f, bgColor);
+
+        var colorOn = ToRaylib(baseColor);
+        // Темно-зеленый для нулей, но чтобы НЕ сливался с серым Z
+        var colorOff = new RColor((byte)40, (byte)140, (byte)40, (byte)255);
+        var colorZ = new RColor((byte)60, (byte)60, (byte)70, (byte)255);
+
+        for (int s = 0; s < strips; s++)
+        {
+            float offset = (s - strips / 2f) * stripThickness + stripThickness / 2f;
+
+            var state = s < states.Length ? states[s] : LogicState.HighZ;
+
+            RColor baseC;
+            if (state == LogicState.One) baseC = colorOn;
+            else if (state == LogicState.Zero) baseC = colorOff;
+            else if (state == LogicState.Conflict) baseC = (s % 2 == 0) ? RColor.Red : RColor.Black;
+            else baseC = colorZ;
+
+            RColor c = baseC;
+            if (s % 2 == 1)
+            {
+                c = new RColor((byte)(baseC.R * 0.7f), (byte)(baseC.G * 0.7f), (byte)(baseC.B * 0.7f), (byte)255);
+            }
+
+            var stripPoints = new List<Vector2>();
+            stripPoints.Add(points[0] + Vector2.Normalize(new Vector2(-(points[1] - points[0]).Y, (points[1] - points[0]).X)) * offset);
+
+            for (int i = 1; i < points.Count - 1; i++)
+            {
+                var prev = points[i - 1];
+                var curr = points[i];
+                var next = points[i + 1];
+
+                var d1 = curr - prev;
+                var d2 = next - curr;
+                float len1 = d1.Length();
+                float len2 = d2.Length();
+
+                if (len1 < 0.01f || len2 < 0.01f) continue;
+
+                d1 /= len1;
+                d2 /= len2;
+
+                var n1 = new Vector2(-d1.Y, d1.X);
+                var n2 = new Vector2(-d2.Y, d2.X);
+
+                float bevelDistance = Math.Min(10f, Math.Min(len1 / 2f, len2 / 2f));
+                var pStart = curr - d1 * bevelDistance;
+                var pEnd = curr + d2 * bevelDistance;
+
+                stripPoints.Add(pStart + n1 * offset);
+                stripPoints.Add(pEnd + n2 * offset);
+            }
+
+            var dLast = points[^1] - points[^2];
+            stripPoints.Add(points[^1] + Vector2.Normalize(new Vector2(-dLast.Y, dLast.X)) * offset);
+
+            for (int i = 0; i + 1 < stripPoints.Count; i++)
+            {
+                Raylib.DrawLineEx(stripPoints[i], stripPoints[i + 1], stripThickness, c);
+            }
+        }
     }
 
     public void DrawOverlay(Editor editor, Camera2D camera)
@@ -74,6 +151,7 @@ public sealed class GameRenderer
         var layout = editor.Layout;
         foreach (var el in editor.Selection)
         {
+            if (!editor.IsElementVisible(el)) continue;
             if (!layout.TryGet(el, out var p)) continue;
             Raylib.DrawRectangleLinesEx(
                 new Rectangle(p.X - 4, p.Y - 4, el.Width + 8, el.Height + 8),
@@ -95,18 +173,30 @@ public sealed class GameRenderer
 
         if (editor.WireStart is { } start && editor.WirePreviewColor is { } c)
         {
-            var rc = ToRaylib(c);
-            var pts = new List<Vector2> { start };
-            pts.AddRange(editor.PendingWaypoints);
-            pts.Add(editor.MouseWorld);
+            var rawPts = new List<Vector2> { start };
+            rawPts.AddRange(editor.PendingWaypoints);
+            rawPts.Add(editor.MouseWorld);
 
-            for (int i = 0; i + 1 < pts.Count; i++)
-                Raylib.DrawLineEx(pts[i], pts[i + 1], 3f, rc);
+            if (editor.WireStartElement is BusMerger || (editor.WireStartElement is InElement ie && ie.BitWidth > 1))
+            {
+                int strips = 8;
+                if (editor.WireStartElement is BusMerger bm) strips = bm.BitWidth;
+                else if (editor.WireStartElement is InElement ie2) strips = ie2.BitWidth;
 
-            foreach (var wp in editor.PendingWaypoints)
-                Raylib.DrawCircleV(wp, 5, rc);
+                var dummyStates = new LogicState[32];
+                for (int i = 0; i < 32; i++) dummyStates[i] = LogicState.Zero;
 
-            Raylib.DrawCircleV(editor.MouseWorld, 6, rc);
+                DrawRibbonCable(rawPts, dummyStates, c, strips);
+                Raylib.DrawCircleV(editor.MouseWorld, 6, ToRaylib(c));
+            }
+            else
+            {
+                var rc = ToRaylib(c);
+                for (int i = 0; i + 1 < rawPts.Count; i++)
+                    Raylib.DrawLineEx(rawPts[i], rawPts[i + 1], 3f, rc);
+
+                Raylib.DrawCircleV(editor.MouseWorld, 6, rc);
+            }
         }
 
         if (editor.Hover is { } h)
@@ -117,7 +207,19 @@ public sealed class GameRenderer
                 var color = h.IsInput
                     ? new RColor((byte)120, (byte)200, (byte)255, (byte)255)
                     : new RColor((byte)255, (byte)200, (byte)120, (byte)255);
-                Raylib.DrawCircleLinesV(pp, Layout.HitPinRadius, color);
+
+                if (h.Pin.BitWidth > 1)
+                {
+                    float pinW = 12f;
+                    float pinH = h.Pin.BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    Raylib.DrawRectangleLines((int)(pp.X - pinW / 2 - 1), (int)(pp.Y - pinH / 2 - 1),
+                        (int)pinW + 2, (int)pinH + 2, color);
+                }
+                else
+                {
+                    Raylib.DrawCircleLinesV(pp, Layout.HitPinRadius, color);
+                }
 
                 int idx = Layout.PinIndex(h.Element, h.Pin, h.IsInput);
                 var labels = h.IsInput ? h.Element.InputLabels : h.Element.OutputLabels;
@@ -173,14 +275,38 @@ public sealed class GameRenderer
                 int py = el is ChipElement ce
                     ? y + (int)(ce.GetOffset(el.Inputs[k]) * ce.Height)
                     : Layout.PinY(y, el.Height, el.Inputs.Count, k);
-                Raylib.DrawCircleLines(x, py, vpr, ghostLine);
+
+                bool isBus = el.Inputs[k].BitWidth > 1;
+                if (isBus)
+                {
+                    float pinW = 8f;
+                    float pinH = el.Inputs[k].BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    Raylib.DrawRectangleLines(x - (int)pinW / 2, py - (int)pinH / 2, (int)pinW, (int)pinH, ghostLine);
+                }
+                else
+                {
+                    Raylib.DrawCircleLines(x, py, vpr, ghostLine);
+                }
             }
             for (int k = 0; k < el.Outputs.Count; k++)
             {
                 int py = el is ChipElement ce
                     ? y + (int)(ce.GetOffset(el.Outputs[k]) * ce.Height)
                     : Layout.PinY(y, el.Height, el.Outputs.Count, k);
-                Raylib.DrawCircleLines(x + el.Width, py, vpr, ghostLine);
+
+                bool isBus = el.Outputs[k].BitWidth > 1;
+                if (isBus)
+                {
+                    float pinW = 8f;
+                    float pinH = el.Outputs[k].BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    Raylib.DrawRectangleLines(x + el.Width - (int)pinW / 2, py - (int)pinH / 2, (int)pinW, (int)pinH, ghostLine);
+                }
+                else
+                {
+                    Raylib.DrawCircleLines(x + el.Width, py, vpr, ghostLine);
+                }
             }
 
             Raylib.DrawRectangle(x, y, el.Width, el.Height, ghostFill);
@@ -200,18 +326,32 @@ public sealed class GameRenderer
         int count = editor.Palette.PendingCount;
         if (count <= 0) return;
 
-        string? name = null;
-        SDColor body = SDColor.FromArgb(45, 50, 70);
-
-        if (editor.Palette.SelectedTemplate is { } tpl) { name = tpl.Name; body = tpl.BodyColor; }
-        else name = editor.Palette.SelectedTool switch
+        Element? previewEl = null;
+        if (editor.Palette.SelectedTemplate is { } tpl)
         {
-            Palette.Tool.In => "IN",
-            Palette.Tool.Out => "OUT",
-            Palette.Tool.Nand => "NAND",
-            _ => null
-        };
-        if (name is null) return;
+            previewEl = tpl.Prototype.Clone();
+        }
+        else
+        {
+            previewEl = editor.Palette.SelectedTool switch
+            {
+                Palette.Tool.In => new InElement(),
+                Palette.Tool.Out => new OutElement(),
+                Palette.Tool.Nand => new NandElement(),
+                Palette.Tool.Merge => new BusMerger(),
+                Palette.Tool.Split => new BusSplitter(),
+                _ => null
+            };
+        }
+
+        if (previewEl is null) return;
+
+        string name = previewEl.Name;
+        SDColor body = previewEl.BodyColor;
+        int width = previewEl.Width;
+        int height = previewEl.Height;
+        int pinCount = previewEl.Inputs.Count;
+        int outCount = previewEl.Outputs.Count;
 
         const int gap = 24;
         var ghostBody = new RColor(body.R, body.G, body.B, (byte)110);
@@ -220,24 +360,54 @@ public sealed class GameRenderer
 
         for (int i = 0; i < count; i++)
         {
-            int x = (int)editor.MouseWorld.X - Element.DefaultWidth / 2;
-            int y = (int)editor.MouseWorld.Y - Element.DefaultHeight / 2 + i * (Element.DefaultHeight + gap);
-
-            int pinCount = name == "NAND" ? 2 : 1;
-            int outCount = name == "OUT" ? 0 : 1;
+            int x = (int)editor.MouseWorld.X - width / 2;
+            int y = (int)editor.MouseWorld.Y - height / 2 + i * (height + gap);
 
             for (int k = 0; k < pinCount; k++)
-                Raylib.DrawCircleLines(x, Layout.PinY(y, Element.DefaultHeight, pinCount, k), vpr, ghostLine);
-            for (int k = 0; k < outCount; k++)
-                Raylib.DrawCircleLines(x + Element.DefaultWidth,
-                    Layout.PinY(y, Element.DefaultHeight, outCount, k), vpr, ghostLine);
+            {
+                int py = previewEl is ChipElement ce
+                    ? y + (int)(ce.GetOffset(previewEl.Inputs[k]) * height)
+                    : Layout.PinY(y, height, pinCount, k);
 
-            Raylib.DrawRectangle(x, y, Element.DefaultWidth, Element.DefaultHeight, ghostBody);
-            Raylib.DrawRectangleLines(x, y, Element.DefaultWidth, Element.DefaultHeight, ghostLine);
+                bool isBus = previewEl.Inputs[k].BitWidth > 1;
+                if (isBus)
+                {
+                    float pinW = 8f;
+                    float pinH = previewEl.Inputs[k].BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    Raylib.DrawRectangleLines(x - (int)pinW / 2, py - (int)pinH / 2, (int)pinW, (int)pinH, ghostLine);
+                }
+                else
+                {
+                    Raylib.DrawCircleLines(x, py, vpr, ghostLine);
+                }
+            }
+
+            for (int k = 0; k < outCount; k++)
+            {
+                int py = previewEl is ChipElement ce
+                    ? y + (int)(ce.GetOffset(previewEl.Outputs[k]) * height)
+                    : Layout.PinY(y, height, outCount, k);
+
+                bool isBus = previewEl.Outputs[k].BitWidth > 1;
+                if (isBus)
+                {
+                    float pinW = 8f;
+                    float pinH = previewEl.Outputs[k].BitWidth * 2f;
+                    if (pinH < 4f) pinH = 4f;
+                    Raylib.DrawRectangleLines(x + width - (int)pinW / 2, py - (int)pinH / 2, (int)pinW, (int)pinH, ghostLine);
+                }
+                else
+                {
+                    Raylib.DrawCircleLines(x + width, py, vpr, ghostLine);
+                }
+            }
+
+            Raylib.DrawRectangle(x, y, width, height, ghostBody);
+            Raylib.DrawRectangleLines(x, y, width, height, ghostLine);
 
             int tw = Raylib.MeasureText(name, 22);
-            Raylib.DrawText(name, x + (Element.DefaultWidth - tw) / 2,
-                y + Element.DefaultHeight / 2 - 12, 22, ghostLine);
+            Raylib.DrawText(name, x + (width - tw) / 2, y + height / 2 - 12, 22, ghostLine);
             Raylib.DrawText((i + 1).ToString(), x + 6, y + 4, 16, RColor.Yellow);
         }
     }
@@ -249,12 +419,38 @@ public sealed class GameRenderer
         for (int i = 0; i < el.Inputs.Count; i++)
         {
             int py = layout.PinScreenY(el, el.Inputs[i], isInput: true);
-            Raylib.DrawCircle(x, py, vpr, InputPinColor(el.Inputs[i], circuit));
+            var color = InputPinColor(el.Inputs[i], circuit);
+
+            bool isBusPin = el.Inputs[i].BitWidth > 1;
+            if (isBusPin)
+            {
+                float pinW = 8f;
+                float pinH = el.Inputs[i].BitWidth * 2f;
+                if (pinH < 4f) pinH = 4f;
+                Raylib.DrawRectangle(x - (int)pinW / 2, py - (int)pinH / 2, (int)pinW, (int)pinH, color);
+            }
+            else
+            {
+                Raylib.DrawCircle(x, py, vpr, color);
+            }
         }
         for (int i = 0; i < el.Outputs.Count; i++)
         {
             int py = layout.PinScreenY(el, el.Outputs[i], isInput: false);
-            Raylib.DrawCircle(x + el.Width, py, vpr, OutputPinColor(el.Outputs[i], el));
+            var color = OutputPinColor(el.Outputs[i], el);
+
+            bool isBusPin = el.Outputs[i].BitWidth > 1;
+            if (isBusPin)
+            {
+                float pinW = 8f;
+                float pinH = el.Outputs[i].BitWidth * 2f;
+                if (pinH < 4f) pinH = 4f;
+                Raylib.DrawRectangle(x + el.Width - (int)pinW / 2, py - (int)pinH / 2, (int)pinW, (int)pinH, color);
+            }
+            else
+            {
+                Raylib.DrawCircle(x + el.Width, py, vpr, color);
+            }
         }
 
         Raylib.DrawRectangle(x, y, el.Width, el.Height, ToRaylib(el.BodyColor));
@@ -267,7 +463,7 @@ public sealed class GameRenderer
         {
             int py = layout.PinScreenY(el, el.Inputs[i], isInput: true);
             if (i < el.InputLabels.Count)
-                Raylib.DrawText(el.InputLabels[i], x + vpr + 4, py - 9, 14, RColor.LightGray);
+                Raylib.DrawText(el.InputLabels[i], x + vpr + 8, py - 9, 14, RColor.LightGray);
         }
         for (int i = 0; i < el.Outputs.Count; i++)
         {
@@ -276,7 +472,7 @@ public sealed class GameRenderer
             {
                 string lbl = el.OutputLabels[i];
                 int lw = Raylib.MeasureText(lbl, 14);
-                Raylib.DrawText(lbl, x + el.Width - vpr - lw - 4, py - 9, 14, RColor.LightGray);
+                Raylib.DrawText(lbl, x + el.Width - vpr - lw - 8, py - 9, 14, RColor.LightGray);
             }
         }
     }
@@ -320,7 +516,6 @@ public sealed class GameRenderer
             };
         }
 
-        // Нет драйвера: у пина может быть свой цвет — используем его как «базу».
         var fallback = pin.Color;
         if (fallback.HasValue)
         {
@@ -357,57 +552,6 @@ public sealed class GameRenderer
         LogicState.Conflict => "SHORT (X)",
         _ => "?"
     };
-
-    private static void DrawHazardPolyline(List<Vector2> points, float thickness, float dashLen = 10f)
-    {
-        var black = new RColor((byte)0, (byte)0, (byte)0, (byte)255);
-        var red = new RColor((byte)230, (byte)30, (byte)30, (byte)255);
-
-        for (int i = 0; i + 1 < points.Count; i++)
-        {
-            var a = points[i];
-            var b = points[i + 1];
-            var d = b - a;
-            float len = d.Length();
-            if (len < 0.01f) continue;
-            var dir = d / len;
-
-            float pos = 0f;
-            bool isBlack = true;
-            while (pos < len)
-            {
-                float chunk = MathF.Min(dashLen, len - pos);
-                Raylib.DrawLineEx(a + dir * pos, a + dir * (pos + chunk), thickness, isBlack ? black : red);
-                pos += chunk;
-                isBlack = !isBlack;
-            }
-        }
-    }
-
-    private static void DrawDashedPolyline(List<Vector2> points, float thickness, RColor color,
-                                           float dashLen = 10f, float gapLen = 6f)
-    {
-        for (int i = 0; i + 1 < points.Count; i++)
-        {
-            var a = points[i];
-            var b = points[i + 1];
-            var d = b - a;
-            float len = d.Length();
-            if (len < 0.01f) continue;
-            var dir = d / len;
-
-            float pos = 0f;
-            bool on = true;
-            while (pos < len)
-            {
-                float chunk = MathF.Min(on ? dashLen : gapLen, len - pos);
-                if (on)
-                    Raylib.DrawLineEx(a + dir * pos, a + dir * (pos + chunk), thickness, color);
-                pos += chunk;
-                on = !on;
-            }
-        }
-    }
 
     private static RColor ToRaylib(SDColor c) => new(c.R, c.G, c.B, c.A);
     private static RColor Darken(SDColor c, float f) =>

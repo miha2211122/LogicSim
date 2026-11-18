@@ -19,6 +19,13 @@ public sealed class PinEditorDialog
     private const int RowH = 32;
     private const int BtnH = 36;
 
+    private static bool IsAllowedNameChar(char ch)
+        => (ch >= 'a' && ch <= 'z')
+        || (ch >= 'A' && ch <= 'Z')
+        || (ch >= '0' && ch <= '9')
+        || ch == '_'
+        || ch == '-';
+
     public void Open(Element target)
     {
         _target = target;
@@ -131,7 +138,7 @@ public sealed class PinEditorDialog
             while ((c = Raylib.GetCharPressed()) != 0)
             {
                 char ch = (char)c;
-                if (_editBuffer.Length < 6 && (char.IsLetterOrDigit(ch) || ch == '_' || ch == '-'))
+                if (_editBuffer.Length < 6 && IsAllowedNameChar(ch))
                     _editBuffer += ch;
             }
             if (Raylib.IsKeyPressed(KeyboardKey.Backspace) && _editBuffer.Length > 0)

@@ -9,7 +9,7 @@ public sealed class MacroRecipe
     public List<Element> Inner = new();
     public List<Wire> InnerWires = new();
     public List<(InputPin ext, InputPin inner)> Inputs = new();
-    public List<(OutputPin inner, OutputPin ext)> Outputs = new();
+    public List<(InputPin inner, OutputPin ext)> Outputs = new();
     public List<string> InputLabels = new();
     public List<string> OutputLabels = new();
     public List<float> InputOffsets = new();
@@ -43,15 +43,23 @@ public static class MacroBuilder
             switch (el)
             {
                 case InElement ie:
-                    var inExt = new InputPin();
-                    recipe.Inputs.Add((inExt, ie.In));
-                    recipe.InputLabels.Add($"IN{++inCounter}");
+                    var inExt = new InputPin { BitWidth = ie.Out.BitWidth };
+                    recipe.Inputs.Add((inExt, ie.In[0]));
+                    recipe.InputLabels.Add(ie.OutputLabels.Count > 0 && ie.OutputLabels[0] != "1"
+                        ? ie.OutputLabels[0]
+                        : $"IN{++inCounter}");
+                    recipe.InputPinColors.Add(ie.Out.Color);
                     extIn[ie] = inExt;
                     break;
+
                 case OutElement oe:
-                    var outExt = new OutputPin();
-                    recipe.Outputs.Add((oe.Out, outExt));
-                    recipe.OutputLabels.Add($"OUT{++outCounter}");
+                    // Для OUT используем скрытый InternalOut[0]
+                    var outExt = new OutputPin { BitWidth = oe.In.BitWidth };
+                    recipe.Outputs.Add((oe.In, outExt));
+                    recipe.OutputLabels.Add(oe.InputLabels.Count > 0 && oe.InputLabels[0] != "1"
+                        ? oe.InputLabels[0]
+                        : $"OUT{++outCounter}");
+                    recipe.OutputPinColors.Add(oe.In.Color);
                     extOut[oe] = outExt;
                     break;
             }
@@ -60,12 +68,10 @@ public static class MacroBuilder
         for (int i = 0; i < recipe.Inputs.Count; i++)
         {
             recipe.InputOffsets.Add(ChipElement.DefaultOffset(recipe.Inputs.Count, i));
-            recipe.InputPinColors.Add(null);
         }
         for (int i = 0; i < recipe.Outputs.Count; i++)
         {
             recipe.OutputOffsets.Add(ChipElement.DefaultOffset(recipe.Outputs.Count, i));
-            recipe.OutputPinColors.Add(null);
         }
 
         foreach (var w in circuit.Wires)
@@ -85,12 +91,14 @@ public static class MacroBuilder
             {
                 var nw = new Wire(w.From, extIn[ie]);
                 foreach (var wp in w.Waypoints) nw.Waypoints.Add(wp);
+                nw.IsBus = w.IsBus;
                 recipe.ExternalRewire.Add(nw);
             }
             else if (fromIn && !toIn && fromOwner is OutElement oe)
             {
                 var nw = new Wire(extOut[oe], w.To);
                 foreach (var wp in w.Waypoints) nw.Waypoints.Add(wp);
+                nw.IsBus = w.IsBus;
                 recipe.ExternalRewire.Add(nw);
             }
         }
@@ -112,6 +120,12 @@ public static class MacroBuilder
         chip.BodyColor = bodyColor;
         chip.WireColor = wireColor;
         chip.SetSize(recipe.Width, recipe.Height);
+
+        for (int i = 0; i < recipe.InputLabels.Count && i < chip.InputLabels.Count; i++)
+            chip.InputLabels[i] = recipe.InputLabels[i];
+
+        for (int i = 0; i < recipe.OutputLabels.Count && i < chip.OutputLabels.Count; i++)
+            chip.OutputLabels[i] = recipe.OutputLabels[i];
 
         for (int i = 0; i < recipe.Inputs.Count && i < chip.Inputs.Count; i++)
         {

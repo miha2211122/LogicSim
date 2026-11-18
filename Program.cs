@@ -7,6 +7,22 @@ namespace LogicSim.Game;
 
 public static class Program
 {
+    private enum GameState { MainMenu, Editor }
+    private static GameState _state = GameState.MainMenu;
+
+    private static Editor? _editor;
+    private static MainMenu? _mainMenu;
+    private static PauseMenu _pauseMenu = new();
+    private static GameRenderer? _renderer;
+    private static Camera2D _camera;
+
+    private static readonly string SavesDir = GetSavesDir();
+    private static string GetSavesDir()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return System.IO.Path.Combine(appData, "LogicSim", "Saves");
+    }
+
     public static void Main()
     {
         const int W = 1280;
@@ -14,6 +30,9 @@ public static class Program
 
         Raylib.InitWindow(W, H, "LogicSim");
         Raylib.SetTargetFPS(60);
+
+        // Отключаем закрытие окна по Esc (0 == KeyboardKey.Null)
+        Raylib.SetExitKey(0);
 
         try
         {
@@ -27,106 +46,153 @@ public static class Program
         }
         catch { }
 
+        _mainMenu = new MainMenu(SavesDir);
+
+        while (!Raylib.WindowShouldClose())
+        {
+            if (_state == GameState.MainMenu)
+            {
+                _mainMenu.Update();
+
+                if (_mainMenu.ExitRequested) break;
+
+                if (_mainMenu.NewGameRequested)
+                {
+                    CreateNewEditor(W, H);
+                    _state = GameState.Editor;
+                }
+                else if (_mainMenu.LoadGameRequested && _mainMenu.LoadPath != null)
+                {
+                    CreateNewEditor(W, H);
+                    var save = SaveSystem.Load(_mainMenu.LoadPath);
+                    if (save != null)
+                    {
+                        SaveSystem.Apply(save, _editor!.Circuit, _editor.Layout,
+                            out var camTarget, out var camZoom,
+                            _editor.Palette.Templates, _editor.Palette.Library,
+                            _editor.Layers);
+                        _camera.Target = camTarget;
+                        _camera.Zoom = camZoom;
+                        _editor.CurrentSavePath = _mainMenu.LoadPath;
+                        _state = GameState.Editor;
+                    }
+                }
+
+                Raylib.BeginDrawing();
+                _mainMenu.Draw();
+                Raylib.EndDrawing();
+            }
+            else if (_state == GameState.Editor && _editor != null && _renderer != null)
+            {
+                if (_pauseMenu.IsOpen)
+                {
+                    _pauseMenu.Update();
+                    if (_pauseMenu.ResumeRequested) _pauseMenu.Close();
+                    if (_pauseMenu.SaveRequested)
+                    {
+                        if (_editor.CurrentSavePath != null)
+                            _editor.SaveCurrent(_camera);
+                        else
+                            _editor.RequestSave();
+                        _pauseMenu.Close();
+                    }
+                    if (_pauseMenu.MainMenuRequested)
+                    {
+                        _pauseMenu.Close();
+                        _state = GameState.MainMenu;
+                        continue;
+                    }
+                }
+                else
+                {
+                    _editor.Update(ref _camera);
+                    if (_editor.IsPaused)
+                    {
+                        _editor.IsPaused = false;
+                        _pauseMenu.Open();
+                    }
+                }
+
+                _editor.Circuit.Step();
+
+                Raylib.BeginDrawing();
+                Raylib.ClearBackground(new Color((byte)18, (byte)18, (byte)24, (byte)255));
+
+                Raylib.BeginMode2D(_camera);
+                _renderer.Draw(_editor.Circuit, _editor.Layout, _editor.Layers);
+                _renderer.DrawOverlay(_editor, _camera);
+                Raylib.EndMode2D();
+
+                // HUD
+                Raylib.DrawText("LogicSim", 20, 20, 28, Color.White);
+
+                if (_editor.IsNested)
+                {
+                    string mode = _editor.IsReadOnly ? "VIEW" : "OPEN";
+                    Raylib.DrawText($"[{mode}] {_editor.ContextName}", 20, 55, 20,
+                        _editor.IsReadOnly ? Color.Yellow : Color.SkyBlue);
+                }
+
+                if (_editor.StatusMessage is { } msg)
+                    Raylib.DrawText(msg, 20, 85, 14, Color.Yellow);
+
+                var hudMouse = Raylib.GetMousePosition();
+                var saveRect = _editor.SaveButtonRect();
+                var loadRect = _editor.LoadButtonRect();
+                var backRect = _editor.BackButtonRect();
+
+                if (!_editor.AnyModalOpen && !_pauseMenu.IsOpen && Raylib.IsMouseButtonPressed(MouseButton.Left))
+                {
+                    if (Raylib.CheckCollisionPointRec(hudMouse, saveRect))
+                        _editor.RequestSave();
+                    else if (Raylib.CheckCollisionPointRec(hudMouse, loadRect))
+                        _editor.RequestLoad();
+                }
+
+                DrawTextButton(saveRect, "Save (Ctrl+S)", hudMouse, new Color((byte)80, (byte)140, (byte)200, (byte)255));
+                DrawTextButton(loadRect, "Load (Ctrl+O)", hudMouse, new Color((byte)80, (byte)140, (byte)200, (byte)255));
+
+                if (_editor.DrawBackButton)
+                {
+                    var lbl = _editor.IsReadOnly ? "< Back (view)" : "< Back";
+                    DrawTextButton(backRect, lbl, hudMouse, new Color((byte)100, (byte)130, (byte)180, (byte)255));
+                }
+
+                _editor.Palette.Draw();
+                _editor.DrawLayerPanel();
+                _editor.DrawDialogs();
+                if (_editor.HelpVisible) _editor.DrawHelp();
+
+                if (_pauseMenu.IsOpen) _pauseMenu.Draw();
+
+                Raylib.EndDrawing();
+            }
+        }
+
+        Raylib.CloseWindow();
+    }
+
+    private static void CreateNewEditor(int W, int H)
+    {
         var circuit = new Circuit();
-        var a = circuit.Add(new InElement());
-        var b = circuit.Add(new InElement());
-        var nand = circuit.Add(new NandElement());
-        var outEl = circuit.Add(new OutElement());
-
-        circuit.Connect(a.Out, nand.A);
-        circuit.Connect(b.Out, nand.B);
-        circuit.Connect(nand.Out, outEl.In);
-
         var layout = new Layout();
-        layout.Place(a, 180, 260);
-        layout.Place(b, 180, 420);
-        layout.Place(nand, 560, 340);
-        layout.Place(outEl, 940, 340);
 
         var palette = new Palette(W, H);
         var contextMenu = new ContextMenu();
         var macroDialog = new MacroDialog();
         var pinEditor = new PinEditorDialog();
-        var renderer = new GameRenderer();
-        var editor = new Editor(circuit, layout, palette, contextMenu, macroDialog, pinEditor);
 
-        var camera = new Camera2D
+        _renderer = new GameRenderer();
+        _editor = new Editor(circuit, layout, palette, contextMenu, macroDialog, pinEditor);
+        _editor.CurrentSavePath = null;
+
+        _camera = new Camera2D
         {
             Target = new Vector2(W / 2f, H / 2f),
             Offset = new Vector2(W / 2f, H / 2f),
             Rotation = 0f,
             Zoom = 1f
         };
-
-        while (!Raylib.WindowShouldClose())
-        {
-            float wheel = Raylib.GetMouseWheelMove();
-            if (wheel != 0f && !editor.AnyModalOpen)
-            {
-                var zm = Raylib.GetMousePosition();
-                var wb = Raylib.GetScreenToWorld2D(zm, camera);
-                camera.Zoom = Math.Clamp(camera.Zoom + wheel * 0.1f, 0.25f, 4f);
-                var wa = Raylib.GetScreenToWorld2D(zm, camera);
-                camera.Target += wb - wa;
-            }
-
-            var hudMouse = Raylib.GetMousePosition();
-            var saveRect = editor.SaveButtonRect();
-            var loadRect = editor.LoadButtonRect();
-            var backRect = editor.BackButtonRect();
-
-            if (!editor.AnyModalOpen && Raylib.IsMouseButtonPressed(MouseButton.Left))
-            {
-                if (Raylib.CheckCollisionPointRec(hudMouse, saveRect))
-                    editor.RequestSave();
-                else if (Raylib.CheckCollisionPointRec(hudMouse, loadRect))
-                    editor.RequestLoad();
-            }
-
-            editor.Update(ref camera);
-            editor.Circuit.Step();
-
-            Raylib.BeginDrawing();
-            Raylib.ClearBackground(new Color((byte)18, (byte)18, (byte)24, (byte)255));
-
-            Raylib.BeginMode2D(camera);
-            renderer.Draw(editor.Circuit, editor.Layout);
-            renderer.DrawOverlay(editor, camera);
-            Raylib.EndMode2D();
-
-            Raylib.DrawText("LogicSim", 20, 20, 28, Color.White);
-            Raylib.DrawText("Pan: MMB or LMB on empty | Zoom: wheel | Shift+LMB: box select | Del: delete",
-                20, 55, 16, Color.LightGray);
-
-            if (editor.IsNested)
-            {
-                string mode = editor.IsReadOnly ? "VIEW" : "OPEN";
-                Raylib.DrawText($"[{mode}] {editor.ContextName}", 20, 80, 20,
-                    editor.IsReadOnly ? Color.Yellow : Color.SkyBlue);
-            }
-
-            if (editor.StatusMessage is { } msg)
-                Raylib.DrawText(msg, 20, 105, 14, Color.Yellow);
-
-            DrawTextButton(saveRect, "Save (Ctrl+S)", hudMouse, new Color((byte)80, (byte)140, (byte)200, (byte)255));
-            DrawTextButton(loadRect, "Load (Ctrl+O)", hudMouse, new Color((byte)80, (byte)140, (byte)200, (byte)255));
-
-            if (editor.DrawBackButton)
-            {
-                var lbl = editor.IsReadOnly ? "< Back (view)" : "< Back";
-                DrawTextButton(backRect, lbl, hudMouse, new Color((byte)100, (byte)130, (byte)180, (byte)255));
-            }
-
-            palette.Draw();
-            contextMenu.Draw();
-            macroDialog.Draw();
-            pinEditor.Draw();
-            editor.DrawDialogs();
-
-            Raylib.EndDrawing();
-        }
-
-        Raylib.CloseWindow();
     }
 
     private static void DrawTextButton(Rectangle r, string text, Vector2 mouse, Color accent)

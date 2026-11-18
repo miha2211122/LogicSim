@@ -21,9 +21,7 @@ public sealed class Circuit
     public void Remove(Element element)
     {
         _elements.Remove(element);
-        _wires.RemoveAll(w =>
-            !_elements.Any(e => e.Outputs.Contains(w.From)) ||
-            !_elements.Any(e => e.Inputs.Contains(w.To)));
+        _wires.RemoveAll(w => OwnerOf(w.From) is null || OwnerOf(w.To) is null);
     }
 
     public void RemoveRange(IEnumerable<Element> elements)
@@ -31,9 +29,7 @@ public sealed class Circuit
         foreach (var el in elements.ToList())
             _elements.Remove(el);
 
-        _wires.RemoveAll(w =>
-            !_elements.Any(e => e.Outputs.Contains(w.From)) ||
-            !_elements.Any(e => e.Inputs.Contains(w.To)));
+        _wires.RemoveAll(w => OwnerOf(w.From) is null || OwnerOf(w.To) is null);
     }
 
     public void RemoveWire(Wire wire) => _wires.Remove(wire);
@@ -53,7 +49,6 @@ public sealed class Circuit
         {
             foreach (var p in el.Inputs) if (ReferenceEquals(p, pin)) return el;
             foreach (var p in el.Outputs) if (ReferenceEquals(p, pin)) return el;
-            if (el is OutElement oe && ReferenceEquals(oe.Out, pin)) return el;
         }
         return null;
     }
@@ -65,14 +60,6 @@ public sealed class Circuit
             el.Evaluate();
     }
 
-    /// <summary>
-    /// Собирает все провода, приходящие на каждый InputPin, и записывает
-    /// в пин результат разрешения нескольких драйверов.
-    ///
-    /// Пины без драйверов НЕ трогаются — это сохраняет пользовательские
-    /// переключатели (InElement.In, внешние входы ChipElement), которые
-    /// тоже являются InputPin, но не питаются от проводов.
-    /// </summary>
     internal static void ResolveInputs(IReadOnlyList<Element> elements, IReadOnlyList<Wire> wires)
     {
         if (wires.Count == 0) return;
@@ -80,10 +67,19 @@ public sealed class Circuit
         var drivers = new Dictionary<InputPin, LogicState>();
         foreach (var w in wires)
         {
-            var s = w.From.State;
-            drivers[w.To] = drivers.TryGetValue(w.To, out var prev)
-                ? Combine(prev, s)
-                : s;
+            if (w.IsBus)
+            {
+                for (int i = 0; i < 32; i++)
+                    w.To.BusStates[i] = w.From.BusStates[i];
+                w.To.SetValue(w.From.State);
+            }
+            else
+            {
+                var s = w.From.State;
+                drivers[w.To] = drivers.TryGetValue(w.To, out var prev)
+                    ? Combine(prev, s)
+                    : s;
+            }
         }
 
         foreach (var el in elements)
@@ -92,11 +88,6 @@ public sealed class Circuit
                     inp.SetValue(s);
     }
 
-    /// <summary>
-    /// Разрешение двух драйверов на одной линии:
-    /// High-Z драйвером не считается, одинаковые уровни — уровень,
-    /// разные — Conflict (короткое замыкание).
-    /// </summary>
     public static LogicState Combine(LogicState a, LogicState b)
     {
         if (a == b) return a;
@@ -105,11 +96,6 @@ public sealed class Circuit
         return LogicState.Conflict;
     }
 
-    /// <summary>
-    /// Итоговое состояние линии на конкретном входе с учётом ВСЕХ
-    /// подключённых к нему проводов. Используется для подсказки
-    /// при наведении на провод.
-    /// </summary>
     public LogicState NetStateAt(InputPin pin)
     {
         LogicState? result = null;
@@ -121,10 +107,5 @@ public sealed class Circuit
         return result ?? LogicState.HighZ;
     }
 
-    /// <summary>
-    /// Состояние сети, к которой принадлежит провод.
-    /// Это состояние ВХОДА-приёмника: если на один вход идут
-    /// два провода с разными уровнями, оба провода — Conflict.
-    /// </summary>
     public LogicState NetStateOf(Wire wire) => NetStateAt(wire.To);
 }
