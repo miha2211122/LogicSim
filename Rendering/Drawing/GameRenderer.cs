@@ -8,17 +8,29 @@ namespace LogicSim.Game.Rendering;
 
 public sealed class GameRenderer
 {
-    public void Draw(Circuit circuit, Layout layout, LayerSet? layers = null)
+    private RenderTexture2D? _ghostTarget;
+
+    public void Draw(Circuit circuit, Layout layout, LayerSet? layers = null, Camera2D? camera = null)
     {
-        bool Visible(Element el) => layers is null || layers.IsVisible(el.Layer);
+        if (camera is not null && layers is not null && layers.Layers.Any(l => !l.Visible))
+            DrawHiddenGhost(circuit, layout, layers, camera.Value);
+
+        DrawPass(circuit, layout, layers, ghost: false);
+    }
+
+    private void DrawPass(Circuit circuit, Layout layout, LayerSet? layers, bool ghost)
+    {
+        bool Visible(Element el) => layers is null || layers.IsVisible(el.Layer) != ghost;
 
         bool WireVisible(Wire w)
         {
-            if (layers is null) return true;
-            if (!layers.IsVisible(w.Layer)) return false;
+            if (layers is null) return !ghost;
             var from = circuit.OwnerOf(w.From);
             var to = circuit.OwnerOf(w.To);
-            return from is not null && to is not null && Visible(from) && Visible(to);
+            if (from is null || to is null) return false;
+            if (ghost)
+                return !layers.IsVisible(w.Layer) || Visible(from) || Visible(to);
+            return layers.IsVisible(w.Layer) && Visible(from) && Visible(to);
         }
 
         foreach (var wire in circuit.Wires)
@@ -36,25 +48,65 @@ public sealed class GameRenderer
             rawPoints.AddRange(wire.Waypoints);
             rawPoints.Add(p2.Value);
 
+            if (!wire.IsValid) continue;
+
             var net = circuit.NetStateOf(wire);
             var baseColor = wire.From.Color ?? owner1.WireColor;
 
             if (wire.IsBus)
             {
-                int strips = Math.Max(wire.From.BitWidth, wire.To.BitWidth);
-                if (strips <= 1) strips = 8;
-                DrawRibbonCable(rawPoints, wire.To.BusStates, baseColor, strips);
+                int strips = Math.Clamp(Math.Max(wire.From.BitWidth, wire.To.BitWidth), 2, 32);
+                var states = wire.To.BitWidth > 1 ? wire.To.BusStates : wire.From.BusStates;
+                DrawRibbonCable(rawPoints, states, baseColor, strips);
                 continue;
             }
 
-            var color = net == LogicState.One ? ToRaylib(baseColor) : Darken(baseColor, 0.45f);
+            var color = net switch
+            {
+                LogicState.One => ToRaylib(baseColor),
+                LogicState.Zero => Darken(baseColor, 0.45f),
+                LogicState.HighZ => new RColor((byte)140, (byte)140, (byte)150, (byte)255),
+                LogicState.Conflict => ConflictPulse(),
+                _ => Darken(baseColor, 0.45f)
+            };
             for (int i = 0; i + 1 < rawPoints.Count; i++)
-                Raylib.DrawLineEx(rawPoints[i], rawPoints[i + 1], 3f, color);
+                if (net == LogicState.HighZ)
+                    DrawDashedWire(rawPoints[i], rawPoints[i + 1], 3f, color);
+                else
+                    Raylib.DrawLineEx(rawPoints[i], rawPoints[i + 1], 3f, color);
         }
 
         foreach (var el in circuit.Elements)
             if (Visible(el) && layout.TryGet(el, out var p))
                 DrawElement(el, p.X, p.Y, circuit, layout);
+    }
+
+    private void DrawHiddenGhost(Circuit circuit, Layout layout, LayerSet layers, Camera2D camera)
+    {
+        int w = Raylib.GetScreenWidth();
+        int h = Raylib.GetScreenHeight();
+        if (w <= 0 || h <= 0) return;
+
+        if (_ghostTarget is null || _ghostTarget.Value.Texture.Width != w || _ghostTarget.Value.Texture.Height != h)
+        {
+            if (_ghostTarget is not null) Raylib.UnloadRenderTexture(_ghostTarget.Value);
+            _ghostTarget = Raylib.LoadRenderTexture(w, h);
+        }
+
+        Raylib.EndMode2D();
+        Raylib.BeginTextureMode(_ghostTarget.Value);
+        Raylib.ClearBackground(new Color(0, 0, 0, 0));
+        Raylib.BeginMode2D(camera);
+
+        DrawPass(circuit, layout, layers, ghost: true);
+        Raylib.EndMode2D();
+        Raylib.EndTextureMode();
+
+        var tex = _ghostTarget.Value.Texture;
+        var src = new Rectangle(0, 0, tex.Width, -tex.Height);
+        Raylib.DrawTextureRec(tex, src, Vector2.Zero,
+            new Color((byte)255, (byte)255, (byte)255, (byte)64));
+        Raylib.BeginMode2D(camera);
     }
 
     private List<Vector2> RemoveDuplicatePoints(List<Vector2> points)
@@ -333,15 +385,7 @@ public sealed class GameRenderer
         }
         else
         {
-            previewEl = editor.Palette.SelectedTool switch
-            {
-                Palette.Tool.In => new InElement(),
-                Palette.Tool.Out => new OutElement(),
-                Palette.Tool.Nand => new NandElement(),
-                Palette.Tool.Merge => new BusMerger(),
-                Palette.Tool.Split => new BusSplitter(),
-                _ => null
-            };
+            previewEl = Palette.CreateElement(editor.Palette.SelectedTool);
         }
 
         if (previewEl is null) return;
@@ -459,6 +503,18 @@ public sealed class GameRenderer
         int tw = Raylib.MeasureText(el.Name, 22);
         Raylib.DrawText(el.Name, x + (el.Width - tw) / 2, y + el.Height / 2 - 12, 22, RColor.White);
 
+        string? tag = el switch
+        {
+            ClockElement clock => $"{clock.PeriodTicks}t",
+            DelayElement delay => $"{delay.DelayTicks}t",
+            _ => null
+        };
+        if (tag is not null)
+        {
+            int lw = Raylib.MeasureText(tag, 13);
+            Raylib.DrawText(tag, x + (el.Width - lw) / 2, y + el.Height / 2 + 14, 13, RColor.Yellow);
+        }
+
         for (int i = 0; i < el.Inputs.Count; i++)
         {
             int py = layout.PinScreenY(el, el.Inputs[i], isInput: true);
@@ -539,10 +595,33 @@ public sealed class GameRenderer
         };
     }
 
+    /// <summary>Пунктир для цепи в состоянии High-Z.</summary>
+    private static void DrawDashedWire(Vector2 a, Vector2 b, float thickness, RColor color)
+    {
+        const float dash = 9f;
+        const float gap = 6f;
+
+        float len = Vector2.Distance(a, b);
+        if (len < 0.01f) return;
+        if (len <= dash)
+        {
+            Raylib.DrawLineEx(a, b, thickness, color);
+            return;
+        }
+
+        var dir = (b - a) / len;
+        for (float t = 0f; t < len; t += dash + gap)
+        {
+            var from = a + dir * t;
+            var to = a + dir * Math.Min(t + dash, len);
+            Raylib.DrawLineEx(from, to, thickness, color);
+        }
+    }
+
     private static RColor ConflictPulse()
         => ((int)(Raylib.GetTime() * 6) % 2 == 0)
             ? new RColor((byte)240, (byte)60, (byte)60, (byte)255)
-            : new RColor((byte)20, (byte)20, (byte)20, (byte)255);
+            : new RColor((byte)110, (byte)28, (byte)28, (byte)255);
 
     private static string StateLabel(LogicState s) => s switch
     {

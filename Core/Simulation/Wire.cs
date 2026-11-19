@@ -18,5 +18,9 @@ public sealed class Wire
     {
         From = from;
         To = to;
+        IsBus = from.BitWidth > 1 || to.BitWidth > 1;
     }
+
+    /// <summary>Провод корректен, только если разрядность обоих пинов совпадает.</summary>
+    public bool IsValid => From.BitWidth == To.BitWidth;
 }

@@ -9,6 +9,7 @@ public sealed class SaveFile
 {
     public int Version { get; set; } = 2;
     public string Name { get; set; } = "";
+    public bool Running { get; set; } = true;
     public Vector2 CameraTarget { get; set; }
     public float CameraZoom { get; set; } = 1f;
     public List<SavedElement> Elements { get; set; } = new();
@@ -27,6 +28,13 @@ public sealed class SavedLayer
     public bool Locked { get; set; }
 }
 
+public sealed class SavedPinState
+{
+    public int State { get; set; } = (int)LogicState.HighZ;
+    /// <summary>32 бита шины; null, если все биты High-Z.</summary>
+    public List<int>? Bus { get; set; }
+}
+
 public sealed class SavedElement
 {
     public string Kind { get; set; } = "";
@@ -37,6 +45,8 @@ public sealed class SavedElement
     public int Width { get; set; }
     public int Height { get; set; }
     public int BitWidth { get; set; } = 1;
+    public int PeriodTicks { get; set; } = 60;
+    public int DelayTicks { get; set; } = 8;
     public string BodyColor { get; set; } = "";
     public string WireColor { get; set; } = "";
     public List<string>? InputLabels { get; set; }
@@ -45,6 +55,9 @@ public sealed class SavedElement
     public List<string>? OutputPinColors { get; set; }
     public List<float>? InputPinOffsets { get; set; }
     public List<float>? OutputPinOffsets { get; set; }
+    /// <summary>Состояния входов — в том числе переключатели IN-элементов.</summary>
+    public List<SavedPinState>? InputPinStates { get; set; }
+    public List<SavedPinState>? OutputPinStates { get; set; }
     public SaveFile? ChipContent { get; set; }
 }
 
@@ -64,6 +77,8 @@ public sealed class SavedTemplate
     public string Name { get; set; } = "";
     public string BodyColor { get; set; } = "";
     public string WireColor { get; set; } = "";
+    public Vector2 CameraTarget { get; set; }
+    public float CameraZoom { get; set; }
     public SaveFile ChipContent { get; set; } = new();
 
     public int Width { get; set; }
@@ -81,8 +96,39 @@ public static class SaveSystem
     private static readonly JsonSerializerOptions Opts = new()
     {
         WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new Vector2Converter() }
     };
+
+    /// <summary>Vector2 держит публичные поля, а System.Text.Json по умолчанию сериализует только свойства.</summary>
+    public sealed class Vector2Converter : JsonConverter<Vector2>
+    {
+        public override Vector2 Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Null) return Vector2.Zero;
+
+            using var doc = JsonDocument.ParseValue(ref reader);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return Vector2.Zero;
+
+            float x = ReadAxis(root, "X");
+            float y = ReadAxis(root, "Y");
+            return new Vector2(x, y);
+        }
+
+        private static float ReadAxis(JsonElement root, string name)
+            => root.TryGetProperty(name, out var v) || root.TryGetProperty(name.ToLowerInvariant(), out v)
+                ? v.GetSingle()
+                : 0f;
+
+        public override void Write(Utf8JsonWriter writer, Vector2 value, JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("X", value.X);
+            writer.WriteNumber("Y", value.Y);
+            writer.WriteEndObject();
+        }
+    }
 
     public static void Save(string path, Circuit circuit, LayoutAccessor layout,
         Vector2 camTarget, float camZoom,
@@ -127,7 +173,12 @@ public static class SaveSystem
         circuit.Clear();
         layout.Clear();
         DeserializeInto(save, circuit, layout);
-        if (layers is not null) ReadLayers(save, layers);
+        circuit.Running = save.Running;
+        if (layers is not null)
+        {
+            ReadLayers(save, layers);
+            NormalizeLayers(circuit, layers);
+        }
     }
 
     public static void Apply(SaveFile save, Circuit circuit, LayoutAccessor layout,
@@ -138,7 +189,12 @@ public static class SaveSystem
         circuit.Clear();
         layout.Clear();
         DeserializeInto(save, circuit, layout);
-        if (layers is not null) ReadLayers(save, layers);
+        circuit.Running = save.Running;
+        if (layers is not null)
+        {
+            ReadLayers(save, layers);
+            NormalizeLayers(circuit, layers);
+        }
 
         templates.Clear();
         foreach (var t in save.Templates)
@@ -172,6 +228,8 @@ public static class SaveSystem
         InputPinOffsets = tpl.Prototype.Inputs
             .Select(p => tpl.Prototype.GetOffset(p))
             .ToList(),
+        CameraTarget = tpl.CameraTarget,
+        CameraZoom = tpl.CameraZoom,
         OutputPinOffsets = tpl.Prototype.Outputs
             .Select(p => tpl.Prototype.GetOffset(p))
             .ToList()
@@ -228,6 +286,8 @@ public static class SaveSystem
         return new ChipTemplate
         {
             Name = t.Name,
+        CameraTarget = t.CameraTarget,
+        CameraZoom = t.CameraZoom,
             BodyColor = chip.BodyColor,
             WireColor = chip.WireColor,
             Prototype = chip
@@ -244,27 +304,35 @@ public static class SaveSystem
 
     private static void ReadLayers(SaveFile save, LayerSet layers)
     {
-        if (save.Layers.Count == 0) return;
-
         var fresh = new LayerSet();
-        // Заполняем через публичный API, чтобы не зависить от внутреннего списка.
-        while (fresh.Count < save.Layers.Count)
-            if (!fresh.AddLayer()) break;
-
-        for (int i = 0; i < fresh.Count && i < save.Layers.Count; i++)
+        if (save.Layers.Count > 0)
         {
-            var s = save.Layers[i];
-            if (!string.IsNullOrEmpty(s.Name)) fresh.Layers[i].Name = s.Name;
-            fresh.Layers[i].Visible = s.Visible;
-            fresh.Layers[i].Locked = s.Locked;
+            // Заполняем через публичный API, чтобы не зависить от внутреннего списка.
+            while (fresh.Count < save.Layers.Count)
+                if (!fresh.AddLayer()) break;
+
+            for (int i = 0; i < fresh.Count && i < save.Layers.Count; i++)
+            {
+                var s = save.Layers[i];
+                if (!string.IsNullOrEmpty(s.Name)) fresh.Layers[i].Name = s.Name;
+                fresh.Layers[i].Visible = s.Visible;
+                fresh.Layers[i].Locked = s.Locked;
+            }
+            fresh.SetActive(save.ActiveLayer);
         }
-        fresh.SetActive(save.ActiveLayer);
         layers.CopyFrom(fresh);
+    }
+
+    private static void NormalizeLayers(Circuit circuit, LayerSet layers)
+    {
+        int max = layers.Count - 1;
+        foreach (var el in circuit.Elements) el.Layer = Math.Clamp(el.Layer, 0, max);
+        foreach (var w in circuit.Wires) w.Layer = Math.Clamp(w.Layer, 0, max);
     }
 
     private static SaveFile SerializeCircuit(Circuit circuit, LayoutAccessor layout)
     {
-        var save = new SaveFile();
+        var save = new SaveFile { Running = circuit.Running };
         var idMap = new Dictionary<Element, int>();
         int next = 1;
 
@@ -290,12 +358,16 @@ public static class SaveSystem
                     OutElement o => o.BitWidth,
                     _ => 1
                 },
+                PeriodTicks = el is ClockElement clock ? clock.PeriodTicks : 60,
+                DelayTicks = el is DelayElement delay ? delay.DelayTicks : 8,
                 BodyColor = ColorToHex(el.BodyColor),
                 WireColor = ColorToHex(el.WireColor),
                 InputLabels = el.InputLabels.ToList(),
                 OutputLabels = el.OutputLabels.ToList(),
                 InputPinColors = el.Inputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
                 OutputPinColors = el.Outputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
+                InputPinStates = CapturePinStates(el.Inputs),
+                OutputPinStates = CapturePinStates(el.Outputs),
                 ChipContent = el is ChipElement chip ? SerializeChip(chip) : null
             };
 
@@ -359,12 +431,16 @@ public static class SaveSystem
                     OutElement o => o.BitWidth,
                     _ => 1
                 },
+                PeriodTicks = el is ClockElement clock ? clock.PeriodTicks : 60,
+                DelayTicks = el is DelayElement delay ? delay.DelayTicks : 8,
                 BodyColor = ColorToHex(el.BodyColor),
                 WireColor = ColorToHex(el.WireColor),
                 InputLabels = el.InputLabels.ToList(),
                 OutputLabels = el.OutputLabels.ToList(),
                 InputPinColors = el.Inputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
                 OutputPinColors = el.Outputs.Select(p => p.Color.HasValue ? ColorToHex(p.Color.Value) : "").ToList(),
+                InputPinStates = CapturePinStates(el.Inputs),
+                OutputPinStates = CapturePinStates(el.Outputs),
                 ChipContent = el is ChipElement c2 ? SerializeChip(c2) : null
             };
 
@@ -411,6 +487,11 @@ public static class SaveSystem
                 "IN" => new InElement(s.BitWidth),
                 "OUT" => new OutElement(s.BitWidth),
                 "NAND" => new NandElement(),
+                "3STATE" => new TriStateBufferElement(),
+                "PULLUP" => new PullUpElement(),
+                "PULLDOWN" => new PullDownElement(),
+                "CLK" => new ClockElement(),
+                "DELAY" => new DelayElement(),
                 "MERGE" => new BusMerger(s.BitWidth),
                 "SPLIT" => new BusSplitter(s.BitWidth),
                 "CHIP" => s.ChipContent is not null
@@ -433,7 +514,7 @@ public static class SaveSystem
 
             var fromPin = PinByIndex(fromEl, sw.FromPinIdx, isInput: false);
             var toPin = PinByIndex(toEl, sw.ToPinIdx, isInput: true);
-            if (fromPin is OutputPin op && toPin is InputPin ip)
+            if (fromPin is OutputPin op && toPin is InputPin ip && op.BitWidth == ip.BitWidth)
             {
                 var w = circuit.Connect(op, ip);
                 w.IsBus = sw.IsBus;
@@ -444,11 +525,54 @@ public static class SaveSystem
         }
     }
 
+    private static List<SavedPinState>? CapturePinStates(IReadOnlyList<Pin> pins)
+    {
+        if (pins.Count == 0) return null;
+
+        var result = new List<SavedPinState>(pins.Count);
+        foreach (var pin in pins)
+        {
+            var bits = pin.BusStates;
+            List<int>? bus = null;
+            for (int i = 0; i < bits.Length; i++)
+            {
+                if (bits[i] == LogicState.HighZ) continue;
+                bus = bits.Select(b => (int)b).ToList();
+                break;
+            }
+
+            result.Add(new SavedPinState { State = (int)pin.State, Bus = bus });
+        }
+        return result;
+    }
+
+    private static void ApplyPinStates(IReadOnlyList<Pin> pins, List<SavedPinState>? states)
+    {
+        if (states is null) return;
+
+        for (int i = 0; i < states.Count && i < pins.Count; i++)
+        {
+            var s = states[i];
+            if (s.State >= (int)LogicState.Zero && s.State <= (int)LogicState.Conflict)
+                pins[i].SetValue((LogicState)s.State);
+
+            if (s.Bus is null) continue;
+            var bits = Enumerable.Repeat(LogicState.HighZ, 32).ToArray();
+            for (int b = 0; b < bits.Length && b < s.Bus.Count; b++)
+                if (s.Bus[b] >= (int)LogicState.Zero && s.Bus[b] <= (int)LogicState.Conflict)
+                    bits[b] = (LogicState)s.Bus[b];
+            pins[i].BusStates = bits;
+        }
+    }
+
     private static void ApplyElementCommon(Element el, SavedElement s)
     {
         el.Layer = s.Layer;
         el.BodyColor = HexToColor(s.BodyColor);
         el.WireColor = HexToColor(s.WireColor);
+
+        if (el is ClockElement clock) clock.SetPeriod(s.PeriodTicks);
+        if (el is DelayElement delay) delay.SetDelay(s.DelayTicks);
 
         if (s.InputLabels is not null && s.InputLabels.Count == el.Inputs.Count)
         {
@@ -479,6 +603,9 @@ public static class SaveSystem
                 for (int i = 0; i < s.OutputPinOffsets.Count && i < chip.Outputs.Count; i++)
                     chip.SetOffset(chip.Outputs[i], s.OutputPinOffsets[i]);
         }
+
+        ApplyPinStates(el.Inputs, s.InputPinStates);
+        ApplyPinStates(el.Outputs, s.OutputPinStates);
     }
 
     private static ChipElement DeserializeChip(SaveFile content, string fallbackName)
@@ -496,6 +623,11 @@ public static class SaveSystem
                 "IN" => new InElement(s.BitWidth),
                 "OUT" => new OutElement(s.BitWidth),
                 "NAND" => new NandElement(),
+                "3STATE" => new TriStateBufferElement(),
+                "PULLUP" => new PullUpElement(),
+                "PULLDOWN" => new PullDownElement(),
+                "CLK" => new ClockElement(),
+                "DELAY" => new DelayElement(),
                 "MERGE" => new BusMerger(s.BitWidth),
                 "SPLIT" => new BusSplitter(s.BitWidth),
                 "CHIP" => s.ChipContent is not null
@@ -518,7 +650,7 @@ public static class SaveSystem
 
             var fromPin = PinByIndex(fromEl, sw.FromPinIdx, isInput: false);
             var toPin = PinByIndex(toEl, sw.ToPinIdx, isInput: true);
-            if (fromPin is OutputPin op && toPin is InputPin ip)
+            if (fromPin is OutputPin op && toPin is InputPin ip && op.BitWidth == ip.BitWidth)
             {
                 var w = new Wire(op, ip);
                 w.IsBus = sw.IsBus;
@@ -548,6 +680,9 @@ public static class SaveSystem
         var chip = new ChipElement(name, inner.ToArray(), wires.ToArray(),
             inputs.ToArray(), outputs.ToArray());
         ReadLayers(content, chip.LayerState);
+        int maxLayer = chip.LayerState.Count - 1;
+        foreach (var el in inner) el.Layer = Math.Clamp(el.Layer, 0, maxLayer);
+        foreach (var w in wires) w.Layer = Math.Clamp(w.Layer, 0, maxLayer);
 
         foreach (var s in content.Elements)
             if (idMap.TryGetValue(s.Id, out var el))
@@ -561,6 +696,11 @@ public static class SaveSystem
         InElement => "IN",
         OutElement => "OUT",
         NandElement => "NAND",
+        TriStateBufferElement => "3STATE",
+        PullUpElement => "PULLUP",
+        PullDownElement => "PULLDOWN",
+        ClockElement => "CLK",
+        DelayElement => "DELAY",
         BusMerger => "MERGE",
         BusSplitter => "SPLIT",
         ChipElement => "CHIP",

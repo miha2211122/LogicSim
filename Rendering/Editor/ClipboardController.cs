@@ -83,13 +83,14 @@ public sealed class ClipboardController
 
     public bool CommitPaste(Circuit circuit, Layout layout, Vector2 atWorld,
         out List<Element> inserted, Action? onBeforeMutate = null,
-        Func<Element, bool>? include = null)
+        Func<Element, bool>? include = null, LayerSet? layers = null)
     {
         inserted = new List<Element>();
         if (_hologram is null) return false;
 
         var data = _hologram;
         var offset = atWorld - _center;
+        int maxLayer = layers is not null ? layers.Count - 1 : int.MaxValue;
 
         // Запрет пересечения.
         for (int i = 0; i < data.Elements.Count; i++)
@@ -111,6 +112,8 @@ public sealed class ClipboardController
         var newElements = new List<Element>();
         foreach (var el in data.Elements)
             newElements.Add(DeepClone(el));
+        foreach (var el in newElements)
+            el.Layer = Math.Clamp(el.Layer, 0, maxLayer);
 
         for (int i = 0; i < newElements.Count; i++)
         {
@@ -126,11 +129,11 @@ public sealed class ClipboardController
 
             var fromPin = PinByIndex(newElements[cw.FromIdx], cw.FromPinIdx, isInput: false) as OutputPin;
             var toPin = PinByIndex(newElements[cw.ToIdx], cw.ToPinIdx, isInput: true) as InputPin;
-            if (fromPin is null || toPin is null) continue;
+            if (fromPin is null || toPin is null || fromPin.BitWidth != toPin.BitWidth) continue;
 
             var w = circuit.Connect(fromPin, toPin);
-            w.IsBus = cw.IsBus;
-            w.Layer = cw.Layer;
+            w.IsBus = fromPin.BitWidth > 1;
+            w.Layer = Math.Clamp(cw.Layer, 0, maxLayer);
             foreach (var wp in cw.Waypoints) w.Waypoints.Add(wp + offset);
         }
 
@@ -163,8 +166,13 @@ public sealed class ClipboardController
             InElement ie => new InElement(ie.BitWidth),
             OutElement oe => new OutElement(oe.BitWidth),
             NandElement => new NandElement(),
+            ClockElement => new ClockElement(),
+            DelayElement de => new DelayElement(de.DelayTicks),
             BusMerger bm => new BusMerger(bm.BitWidth),
             BusSplitter bs => new BusSplitter(bs.BitWidth),
+            TriStateBufferElement => new TriStateBufferElement(),
+            PullUpElement => new PullUpElement(),
+            PullDownElement => new PullDownElement(),
             ChipElement ce => ce.Clone(),
             _ => throw new NotSupportedException($"Unknown element: {el.GetType().Name}")
         };
@@ -172,6 +180,11 @@ public sealed class ClipboardController
         copy.BodyColor = el.BodyColor;
         copy.WireColor = el.WireColor;
         copy.Layer = el.Layer;
+
+        if (el is ClockElement oldClock && copy is ClockElement newClock)
+            newClock.SetPeriod(oldClock.PeriodTicks);
+        if (el is DelayElement oldDelay && copy is DelayElement newDelay)
+            newDelay.SetDelay(oldDelay.DelayTicks);
 
         copy.InputLabels.Clear(); copy.InputLabels.AddRange(el.InputLabels);
         copy.OutputLabels.Clear(); copy.OutputLabels.AddRange(el.OutputLabels);

@@ -9,10 +9,26 @@ public abstract class Pin
 
     /// <summary>Массив состояний для шин (до 32 бит). По умолчанию все HighZ.</summary>
     private LogicState[] _busStates = Enumerable.Repeat(LogicState.HighZ, 32).ToArray();
-    public LogicState[] BusStates { get => _busStates; set => _busStates = value; }
+    public LogicState[] BusStates
+    {
+        get => _busStates;
+        set
+        {
+            // Всегда держим ровно 32 ячейки и не даём внешнему коду алиасить массив.
+            Array.Fill(_busStates, LogicState.HighZ);
+            if (value is not null)
+                Array.Copy(value, _busStates, Math.Min(value.Length, _busStates.Length));
+        }
+    }
+
+    /// <summary>Сбрасывает все биты в High-Z (используется при отключении шины).</summary>
+    public void ResetBusStates() => Array.Fill(_busStates, LogicState.HighZ);
 
     /// <summary>Разрядность пина (1 - обычный провод, >1 - шина).</summary>
     public int BitWidth { get; set; } = 1;
+
+    /// <summary>Слабый драйвер (подтяжка): сильный драйвер перекрывает его без конфликта.</summary>
+    public bool Weak { get; set; }
 
     public System.Drawing.Color? Color { get; set; }
 

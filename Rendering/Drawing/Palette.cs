@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using LogicSim.Game.Core;
 using Raylib_cs;
 using RRect = Raylib_cs.Rectangle;
 using RColor = Raylib_cs.Color;
@@ -7,7 +8,30 @@ namespace LogicSim.Game.Rendering;
 
 public sealed class Palette
 {
-    public enum Tool { None, In, Out, Nand, Merge, Split }
+    public enum Tool { None, In, Out, Nand, Merge, Split, Clock, Delay, TriState, PullUp, PullDown }
+
+    /// <summary>Элемент, который живёт в библиотеке, а не на панели инструментов.</summary>
+    public sealed class BuiltinPart
+    {
+        public required string Name { get; init; }
+        public required Tool Tool { get; init; }
+        public required string Hint { get; init; }
+
+        /// <summary>Тот же экземпляр, что создаётся при размещении — превью строится по нему.</summary>
+        public required Func<Element> Create { get; init; }
+    }
+
+    /// <summary>Разделы «PARTS» библиотеки: доступны всегда и не занимают место на панели.</summary>
+    public static readonly IReadOnlyList<BuiltinPart> DefaultLibrary = new[]
+    {
+        new BuiltinPart { Name = "MERGE", Tool = Tool.Merge, Hint = "2-32 bit bus merger", Create = () => CreateElement(Tool.Merge)! },
+        new BuiltinPart { Name = "SPLIT", Tool = Tool.Split, Hint = "2-32 bit bus splitter", Create = () => CreateElement(Tool.Split)! },
+        new BuiltinPart { Name = "CLK", Tool = Tool.Clock, Hint = "Clock generator", Create = () => CreateElement(Tool.Clock)! },
+        new BuiltinPart { Name = "DELAY", Tool = Tool.Delay, Hint = "1-120 tick delay line", Create = () => CreateElement(Tool.Delay)! },
+        new BuiltinPart { Name = "3-STATE", Tool = Tool.TriState, Hint = "D passes when E=1, Z when E=0", Create = () => CreateElement(Tool.TriState)! },
+        new BuiltinPart { Name = "PULL UP", Tool = Tool.PullUp, Hint = "Weak logic 1 source", Create = () => CreateElement(Tool.PullUp)! },
+        new BuiltinPart { Name = "PULL DOWN", Tool = Tool.PullDown, Hint = "Weak logic 0 source", Create = () => CreateElement(Tool.PullDown)! }
+    };
 
     public Tool SelectedTool { get; private set; } = Tool.None;
     public ChipTemplate? SelectedTemplate { get; private set; }
@@ -24,6 +48,8 @@ public sealed class Palette
     private const int BtnW = 90;
     private const int BtnH = 60;
     private const int BtnGap = 10;
+    private const int ToolBtnW = 64;
+    private const int ToolBtnGap = 8;
     private const int Pad = 20;
     private const int MacroW = 180;
     private const int LibraryW = 140;
@@ -33,8 +59,8 @@ public sealed class Palette
     private const int MenuRowH = 34;
     private const int MenuPad = 4;
 
-    private readonly int _screenW;
-    private readonly int _screenH;
+    private int _screenW;
+    private int _screenH;
 
     private readonly List<(RRect Rect, Tool Tool, string Label)> _tools = new();
     private readonly List<(RRect Rect, int Index)> _templateRects = new();
@@ -51,8 +77,22 @@ public sealed class Palette
 
     public Palette(int screenW, int screenH)
     {
-        _screenW = screenW;
-        _screenH = screenH;
+        Resize(screenW, screenH);
+    }
+
+    /// <summary>Пересчёт геометрии панели при смене размера окна / выходе в fullscreen.</summary>
+    public void Resize(int screenW, int screenH)
+    {
+        _screenW = Math.Max(320, screenW);
+        _screenH = Math.Max(BarHeight + 120, screenH);
+        CloseContextMenu();
+        RebuildLayout();
+    }
+
+    private void RebuildLayout()
+    {
+        _tools.Clear();
+        _templateRects.Clear();
 
         int y = _screenH - BarHeight + (BarHeight - BtnH) / 2;
         int x = Pad;
@@ -60,8 +100,6 @@ public sealed class Palette
         AddTool(ref x, y, Tool.In, "IN");
         AddTool(ref x, y, Tool.Out, "OUT");
         AddTool(ref x, y, Tool.Nand, "NAND");
-        AddTool(ref x, y, Tool.Merge, "MERGE");
-        AddTool(ref x, y, Tool.Split, "SPLIT");
 
         _macroRect = new RRect(_screenW - Pad - MacroW, y, MacroW, BtnH);
         _libraryRect = new RRect(_screenW - Pad - MacroW - BtnGap - LibraryW, y, LibraryW, BtnH);
@@ -69,12 +107,14 @@ public sealed class Palette
         int templatesLeft = x + BtnGap;
         int templatesRight = (int)_libraryRect.X - BtnGap;
         _templatesArea = new RRect(templatesLeft, y, templatesRight - templatesLeft, BtnH);
+
+        _scrollX = Math.Clamp(_scrollX, 0, MaxScroll());
     }
 
     private void AddTool(ref int x, int y, Tool tool, string label)
     {
-        _tools.Add((new RRect(x, y, BtnW, BtnH), tool, label));
-        x += BtnW + BtnGap;
+        _tools.Add((new RRect(x, y, ToolBtnW, BtnH), tool, label));
+        x += ToolBtnW + ToolBtnGap;
     }
 
     public bool IsMouseOver() => Raylib.GetMousePosition().Y >= _screenH - BarHeight;
@@ -84,6 +124,30 @@ public sealed class Palette
         SelectedTool = Tool.None;
         SelectedTemplate = null;
         PendingCount = 0;
+    }
+
+    /// <summary>Выбор детали из вкладки PARTS библиотеки.</summary>
+    /// <summary>Единая фабрика: размещение, голограмма и превью библиотеки используют один и тот же элемент.</summary>
+    public static Element? CreateElement(Tool tool) => tool switch
+    {
+        Tool.In => new InElement(),
+        Tool.Out => new OutElement(),
+        Tool.Nand => new NandElement(),
+        Tool.Merge => new BusMerger(),
+        Tool.Split => new BusSplitter(),
+        Tool.Clock => new ClockElement(),
+        Tool.Delay => new DelayElement(),
+        Tool.TriState => new TriStateBufferElement(),
+        Tool.PullUp => new PullUpElement(),
+        Tool.PullDown => new PullDownElement(),
+        _ => null
+    };
+
+    public void SelectBuiltin(Tool tool)
+    {
+        SelectedTool = tool;
+        SelectedTemplate = null;
+        PendingCount = 1;
     }
 
     public void CloseContextMenu()
@@ -240,6 +304,8 @@ public sealed class Palette
         else if (Raylib.IsKeyPressed(KeyboardKey.Three)) hotkey = Tool.Nand;
         else if (Raylib.IsKeyPressed(KeyboardKey.Four)) hotkey = Tool.Merge;
         else if (Raylib.IsKeyPressed(KeyboardKey.Five)) hotkey = Tool.Split;
+        else if (Raylib.IsKeyPressed(KeyboardKey.Six)) hotkey = Tool.Clock;
+        else if (Raylib.IsKeyPressed(KeyboardKey.Seven)) hotkey = Tool.Delay;
 
         if (hotkey is { } tool)
         {
@@ -365,7 +431,7 @@ public sealed class Palette
                            : new RColor((byte)70, (byte)55, (byte)110, (byte)255);
             Raylib.DrawRectangleRec(_libraryRect, bg);
             Raylib.DrawRectangleLinesEx(_libraryRect, 1f, new RColor((byte)170, (byte)140, (byte)220, (byte)255));
-            string txt = $"LIBRARY ({Library.Count})";
+            string txt = $"LIBRARY ({DefaultLibrary.Count + Library.Count})";
             int tw = Raylib.MeasureText(txt, 18);
             Raylib.DrawText(txt,
                 (int)(_libraryRect.X + (_libraryRect.Width - tw) / 2),
@@ -425,11 +491,11 @@ public sealed class Palette
         Raylib.DrawRectangleLinesEx(rect, selected ? 2f : 1f,
             selected ? RColor.White : new RColor((byte)90, (byte)90, (byte)110, (byte)255));
 
-        int tw = Raylib.MeasureText(label, 18);
+        int tw = Raylib.MeasureText(label, 16);
         Raylib.DrawText(label,
             (int)(rect.X + (rect.Width - tw) / 2),
-            (int)(rect.Y + (rect.Height - 18) / 2),
-            18, RColor.White);
+            (int)(rect.Y + (rect.Height - 16) / 2),
+            16, RColor.White);
 
         if (badge is not null) DrawBadge(rect, int.Parse(badge));
     }

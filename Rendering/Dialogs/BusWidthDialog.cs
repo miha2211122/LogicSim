@@ -10,15 +10,17 @@ public sealed class BusWidthDialog
     public bool Confirmed { get; private set; }
     public int NewWidth { get; private set; } = 8;
 
+    private int _minWidth = 1;
     private RRect _bounds;
     private RRect _minusRect, _plusRect;
     private RRect _okRect, _cancelRect;
     private string _title = "";
 
-    public void Open(string title, int currentWidth)
+    public void Open(string title, int currentWidth, int minWidth = 1)
     {
         _title = title;
-        NewWidth = currentWidth;
+        _minWidth = Math.Clamp(minWidth, 1, 32);
+        NewWidth = Math.Clamp(currentWidth, _minWidth, 32);
         IsOpen = true;
         Confirmed = false;
 
@@ -37,13 +39,15 @@ public sealed class BusWidthDialog
     {
         if (!IsOpen) return;
         if (Raylib.IsKeyPressed(KeyboardKey.Escape)) { IsOpen = false; return; }
+        if (Raylib.IsKeyPressed(KeyboardKey.Enter))
+        { Confirmed = true; IsOpen = false; return; }
 
         var m = Raylib.GetMousePosition();
         bool clicked = Raylib.IsMouseButtonPressed(MouseButton.Left);
 
         if (clicked)
         {
-            if (Raylib.CheckCollisionPointRec(m, _minusRect) && NewWidth > 1) NewWidth--;
+            if (Raylib.CheckCollisionPointRec(m, _minusRect) && NewWidth > _minWidth) NewWidth--;
             else if (Raylib.CheckCollisionPointRec(m, _plusRect) && NewWidth < 32) NewWidth++;
             else if (Raylib.CheckCollisionPointRec(m, _okRect)) { Confirmed = true; IsOpen = false; }
             else if (Raylib.CheckCollisionPointRec(m, _cancelRect)) IsOpen = false;

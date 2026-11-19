@@ -35,6 +35,7 @@ public sealed class ContextMenu
     public bool OpenRequested { get; private set; }
     public bool BodyCustomRequested { get; private set; }
     public bool BusWidthRequested { get; private set; }
+    public bool TimingRequested { get; private set; }
     public bool LayerRequested { get; private set; }
 
     private Element? _target;
@@ -44,6 +45,7 @@ public sealed class ContextMenu
     private RRect _viewRect;
     private RRect _openRect;
     private RRect _busWidthRect;
+    private RRect _timingRect;
     private RRect _layerRect;
 
     private int _x0;
@@ -52,6 +54,7 @@ public sealed class ContextMenu
     private bool _viewEnabled;
     private bool _openEnabled;
     private bool _busWidthEnabled;
+    private bool _timingEnabled;
 
     public Element? Target => _target;
 
@@ -63,16 +66,18 @@ public sealed class ContextMenu
         OpenRequested = false;
         BodyCustomRequested = false;
         BusWidthRequested = false;
+        TimingRequested = false;
         LayerRequested = false;
 
         bool isChip = target is ChipElement;
         _viewEnabled = isChip;
         _openEnabled = isChip;
         _busWidthEnabled = target is BusMerger || target is BusSplitter || target is InElement || target is OutElement;
+        _timingEnabled = target is ClockElement || target is DelayElement;
 
         int cols = Palette.Length;
         int colorW = Pad * 2 + cols * CellSize + (cols - 1) * CellGap;
-        int h = Pad * 2 + TitleH + CellSize + CustomH + RowGap + 4 * BtnH + 3 * 6;
+        int h = Pad * 2 + TitleH + CellSize + CustomH + RowGap + 5 * BtnH + 4 * 6;
 
         _bounds = new RRect(at.X, at.Y, colorW, h);
 
@@ -100,7 +105,8 @@ public sealed class ContextMenu
         _viewRect = new RRect(_x0, y, BtnW, BtnH);
         _openRect = new RRect(_x0, y + BtnH + 6, BtnW, BtnH);
         _busWidthRect = new RRect(_x0, y + (BtnH + 6) * 2, BtnW, BtnH);
-        _layerRect = new RRect(_x0, y + (BtnH + 6) * 3, BtnW, BtnH);
+        _timingRect = new RRect(_x0, y + (BtnH + 6) * 3, BtnW, BtnH);
+        _layerRect = new RRect(_x0, y + (BtnH + 6) * 4, BtnW, BtnH);
     }
 
     public void Close()
@@ -111,10 +117,12 @@ public sealed class ContextMenu
         OpenRequested = false;
         BodyCustomRequested = false;
         BusWidthRequested = false;
+        TimingRequested = false;
         LayerRequested = false;
         _viewEnabled = false;
         _openEnabled = false;
         _busWidthEnabled = false;
+        _timingEnabled = false;
     }
 
     public bool Update()
@@ -166,6 +174,12 @@ public sealed class ContextMenu
                 IsOpen = false;
                 return true;
             }
+            if (_timingEnabled && Raylib.CheckCollisionPointRec(m, _timingRect))
+            {
+                TimingRequested = true;
+                IsOpen = false;
+                return true;
+            }
             if (Raylib.CheckCollisionPointRec(m, _layerRect))
             {
                 LayerRequested = true;
@@ -207,6 +221,8 @@ public sealed class ContextMenu
         DrawActionButton(_viewRect, "View", m, new RColor((byte)80, (byte)140, (byte)200, (byte)255), _viewEnabled);
         DrawActionButton(_openRect, "Open", m, new RColor((byte)150, (byte)110, (byte)200, (byte)255), _openEnabled);
         DrawActionButton(_busWidthRect, "Bus Width...", m, new RColor((byte)200, (byte)150, (byte)80, (byte)255), _busWidthEnabled);
+        string timingLabel = _target is ClockElement ? "Period..." : "Delay...";
+        DrawActionButton(_timingRect, timingLabel, m, new RColor((byte)220, (byte)120, (byte)90, (byte)255), _timingEnabled);
         DrawActionButton(_layerRect, "To Active Layer", m, new RColor((byte)100, (byte)190, (byte)170, (byte)255), true);
     }
 

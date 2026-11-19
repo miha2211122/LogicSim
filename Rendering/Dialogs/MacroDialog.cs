@@ -65,11 +65,16 @@ public sealed class MacroDialog
     private const int BtnH = 44;
     private const int PreviewW = 360;
     private const int PreviewH = 220;
+    private const int MinVisiblePinRows = 4;
     private const int SwatchSize = 22;
     private const int StepBtnW = 30;
     private const int StepW = 76;
     private const int GridCellPx = 20;
     private const int BtnGap = 12;
+
+    private const int PreviewTopLabelH = 26;
+    private const int PreviewBottomHintH = 22;
+    private const float MinPreviewPinStep = 16f;
 
     private static readonly RColor DialogBg = new(22, 24, 32, 250);
     private static readonly RColor DialogBorderOuter = new(60, 80, 120, 80);
@@ -99,6 +104,7 @@ public sealed class MacroDialog
 
     private RRect _bounds;
     private RRect _previewRect;
+    private int _previewH;
     private RRect _nameRect;
     private RRect _createRect;
     private RRect _cancelRect;
@@ -109,6 +115,14 @@ public sealed class MacroDialog
 
     private List<(RRect Row, RRect Swatch, int Index)> _inputRows = new();
     private List<(RRect Row, RRect Swatch, int Index)> _outputRows = new();
+    private RRect _listViewport;
+    private int _scrollY;
+    private int _maxScroll;
+
+    private int _previewScrollY;
+    private int _previewMaxScroll;
+    private float _previewViewTop;
+    private float _previewViewH;
 
     private int _bodyRowY, _wireRowY, _bodyRowX, _wireRowX;
     private int _nameLabelY;
@@ -142,11 +156,11 @@ public sealed class MacroDialog
         _nameError = false;
         _nameErrorTimer = 0f;
 
-        recipe.Width = Element.DefaultWidth;
-        recipe.Height = Element.DefaultHeight;
         for (int i = 0; i < recipe.InputPinColors.Count; i++) recipe.InputPinColors[i] = null;
         for (int i = 0; i < recipe.OutputPinColors.Count; i++) recipe.OutputPinColors[i] = null;
 
+        _scrollY = 0;
+        _previewScrollY = 0;
         ComputeBoundsAndLayout();
     }
 
@@ -189,6 +203,8 @@ public sealed class MacroDialog
         _nameError = false;
         _nameErrorTimer = 0f;
 
+        _scrollY = 0;
+        _previewScrollY = 0;
         ComputeBoundsAndLayout();
     }
 
@@ -199,16 +215,22 @@ public sealed class MacroDialog
         int n = Recipe.Inputs.Count;
         int m = Recipe.Outputs.Count;
 
-        int topBlock = 26 + 8 + 18 + 34 + 16 + PreviewH + 16;
-        int listsBlock = 24 + Math.Max(Math.Max(n, m), 1) * RowH + 16;
-        int h = Pad + topBlock + listsBlock + BtnH + Pad;
-        h = Math.Min(h, Raylib.GetScreenHeight() - 40);
-
         int sw = Raylib.GetScreenWidth();
         int sh = Raylib.GetScreenHeight();
+
+        // На невысоком окне превью не должно съедать весь список пинов.
+        _previewH = Math.Clamp(sh - 290 - MinVisiblePinRows * RowH, 180, PreviewH);
+
+        int topBlock = 26 + 8 + 18 + 34 + 16 + _previewH + 16;
+        int listsBlock = 24 + Math.Max(Math.Max(n, m), 1) * RowH + 16;
+        int h = Pad + topBlock + listsBlock + BtnH + Pad;
+        int minH = Pad + topBlock + RowH + 16 + BtnH + Pad;
+        h = Math.Clamp(h, minH, Math.Max(minH, sh - 40));
+
         _bounds = new RRect((sw - Width) / 2, (sh - h) / 2, Width, h);
 
         LayoutRects();
+        _ = PreviewChipRect();
     }
 
     public void Close()
@@ -235,7 +257,7 @@ public sealed class MacroDialog
         _nameRect = new RRect(x, y, Width - Pad * 2, 34);
         y += 34 + 16;
 
-        _previewRect = new RRect(x, y, PreviewW, PreviewH);
+        _previewRect = new RRect(x, y, PreviewW, _previewH);
 
         int rx = x + PreviewW + Pad;
         _rightPanelX = rx;
@@ -249,50 +271,70 @@ public sealed class MacroDialog
 
         _sizeSectionY = y + 26 + 6 + (CellSize + 24) * 2 - 4;
         int sw2 = _sizeSectionY + 26;
-        _wMinus = new RRect(rx, sw2, StepBtnW, RowH);
-        _wValue = new RRect(rx + StepBtnW + 4, sw2, StepW, RowH);
-        _wPlus = new RRect(rx + StepBtnW + 4 + StepW + 4, sw2, StepBtnW, RowH);
+        int groupW = StepBtnW * 2 + StepW + 8;
+        if (_previewH < 216)
+        {
+            // Узкое окно: W и H в одну строку, чтобы не залезть на список пинов.
+            int hx = rx + groupW + 20;
+            _wMinus = new RRect(rx, sw2, StepBtnW, RowH);
+            _wValue = new RRect(rx + StepBtnW + 4, sw2, StepW, RowH);
+            _wPlus = new RRect(rx + StepBtnW + 4 + StepW + 4, sw2, StepBtnW, RowH);
+            _hMinus = new RRect(hx, sw2, StepBtnW, RowH);
+            _hValue = new RRect(hx + StepBtnW + 4, sw2, StepW, RowH);
+            _hPlus = new RRect(hx + StepBtnW + 4 + StepW + 4, sw2, StepBtnW, RowH);
+        }
+        else
+        {
+            _wMinus = new RRect(rx, sw2, StepBtnW, RowH);
+            _wValue = new RRect(rx + StepBtnW + 4, sw2, StepW, RowH);
+            _wPlus = new RRect(rx + StepBtnW + 4 + StepW + 4, sw2, StepBtnW, RowH);
 
-        _hMinus = new RRect(rx, sw2 + RowH + 6, StepBtnW, RowH);
-        _hValue = new RRect(rx + StepBtnW + 4, sw2 + RowH + 6, StepW, RowH);
-        _hPlus = new RRect(rx + StepBtnW + 4 + StepW + 4, sw2 + RowH + 6, StepBtnW, RowH);
+            _hMinus = new RRect(rx, sw2 + RowH + 6, StepBtnW, RowH);
+            _hValue = new RRect(rx + StepBtnW + 4, sw2 + RowH + 6, StepW, RowH);
+            _hPlus = new RRect(rx + StepBtnW + 4 + StepW + 4, sw2 + RowH + 6, StepBtnW, RowH);
+        }
 
-        y += PreviewH + 16;
+        y += _previewH + 16;
 
         int halfW = (Width - Pad * 3) / 2;
+
+        int rowsCount = Math.Max(Recipe?.Inputs.Count ?? 0, Recipe?.Outputs.Count ?? 0);
+        int buttonsY = (int)(_bounds.Y + _bounds.Height) - Pad - BtnH;
+        int listTop = y + 24;
+        int visibleRows = Math.Max(1, (buttonsY - 16 - listTop) / RowH);
+        _listViewport = new RRect(x, listTop, Width - Pad * 2, visibleRows * RowH);
+        _maxScroll = Math.Max(0, (rowsCount - visibleRows) * RowH);
+        _scrollY = Math.Clamp(_scrollY, 0, _maxScroll);
 
         _inputsLabelY = y + 4;
         _outputsLabelY = y + 4;
         _outputsLabelX = x + halfW + Pad;
 
         _inputRows.Clear();
-        int iy = y + 24;
         if (Recipe is not null)
         {
             for (int i = 0; i < Recipe.Inputs.Count; i++)
             {
-                var row = new RRect(x, iy, halfW, RowH - 4);
-                var sw = new RRect(x + halfW - SwatchSize - 8, iy + (RowH - 4 - SwatchSize) / 2, SwatchSize, SwatchSize);
+                int ry = listTop + i * RowH - _scrollY;
+                if (ry + RowH <= listTop || ry >= listTop + _listViewport.Height) continue;
+                var row = new RRect(x, ry, halfW, RowH - 4);
+                var sw = new RRect(x + halfW - SwatchSize - 8, ry + (RowH - 4 - SwatchSize) / 2, SwatchSize, SwatchSize);
                 _inputRows.Add((row, sw, i));
-                iy += RowH;
             }
         }
 
         _outputRows.Clear();
-        int oy = y + 24;
         if (Recipe is not null)
         {
             for (int i = 0; i < Recipe.Outputs.Count; i++)
             {
-                var row = new RRect(_outputsLabelX, oy, halfW, RowH - 4);
-                var sw = new RRect(_outputsLabelX + halfW - SwatchSize - 8, oy + (RowH - 4 - SwatchSize) / 2, SwatchSize, SwatchSize);
+                int ry = listTop + i * RowH - _scrollY;
+                if (ry + RowH <= listTop || ry >= listTop + _listViewport.Height) continue;
+                var row = new RRect(_outputsLabelX, ry, halfW, RowH - 4);
+                var sw = new RRect(_outputsLabelX + halfW - SwatchSize - 8, ry + (RowH - 4 - SwatchSize) / 2, SwatchSize, SwatchSize);
                 _outputRows.Add((row, sw, i));
-                oy += RowH;
             }
         }
-
-        int rowsCount = Math.Max(Recipe?.Inputs.Count ?? 1, Recipe?.Outputs.Count ?? 1);
-        int buttonsY = y + 24 + rowsCount * RowH + 16;
 
         int btnW = (Width - Pad * 2 - BtnGap * 2) / 3;
         _resetRect = new RRect(x, buttonsY, btnW, BtnH);
@@ -320,6 +362,20 @@ public sealed class MacroDialog
         if (Raylib.IsKeyPressed(KeyboardKey.Escape)) { Close(); return; }
 
         var m = Raylib.GetMousePosition();
+
+        float wheel = Raylib.GetMouseWheelMove();
+        if (wheel != 0f && _previewMaxScroll > 0 && Raylib.CheckCollisionPointRec(m, _previewRect))
+        {
+            int next = Math.Clamp(_previewScrollY - (int)(wheel * RowH * 2), 0, _previewMaxScroll);
+            if (next != _previewScrollY) { _previewScrollY = next; LayoutRects(); }
+        }
+        else if (wheel != 0f && _maxScroll > 0 && Raylib.CheckCollisionPointRec(m, _bounds))
+        {
+            int next = Math.Clamp(_scrollY - (int)(wheel * RowH * 3), 0, _maxScroll);
+            next = (next / RowH) * RowH;
+            if (next != _scrollY) { _scrollY = next; LayoutRects(); }
+        }
+
         bool clicked = Raylib.IsMouseButtonPressed(MouseButton.Left);
         bool down = Raylib.IsMouseButtonDown(MouseButton.Left);
         bool released = Raylib.IsMouseButtonReleased(MouseButton.Left);
@@ -393,8 +449,11 @@ public sealed class MacroDialog
                     Recipe.OutputOffsets[i] = ChipElement.DefaultOffset(Recipe.OutputOffsets.Count, i);
                 for (int i = 0; i < Recipe.InputPinColors.Count; i++) Recipe.InputPinColors[i] = null;
                 for (int i = 0; i < Recipe.OutputPinColors.Count; i++) Recipe.OutputPinColors[i] = null;
-                Recipe.Width = Element.DefaultWidth;
-                Recipe.Height = Element.DefaultHeight;
+                int maxLabelW = 0;
+                foreach (var lbl in Recipe.InputLabels) maxLabelW = Math.Max(maxLabelW, Raylib.MeasureText(lbl, 14));
+                foreach (var lbl in Recipe.OutputLabels) maxLabelW = Math.Max(maxLabelW, Raylib.MeasureText(lbl, 14));
+                Recipe.Width = Math.Max(130, maxLabelW * 2 + 60);
+                Recipe.Height = Math.Max(80, Math.Max(Recipe.Inputs.Count, Recipe.Outputs.Count) * ChipElement.MinPinSpacing + 20);
                 return;
             }
             if (Raylib.CheckCollisionPointRec(m, _createRect))
@@ -456,11 +515,13 @@ public sealed class MacroDialog
     {
         if (Recipe is null) return false;
         var (cx, cy, w, h, scale) = PreviewChipRect();
+        float chipTop = cy - _previewScrollY;
         float pinR = Layout.VisualPinRadius * scale;
 
         for (int i = 0; i < Recipe.Inputs.Count; i++)
         {
-            float py = cy + Recipe.InputOffsets[i] * h;
+            float py = chipTop + Recipe.InputOffsets[i] * h;
+            if (py < _previewViewTop - 8f || py > _previewViewTop + _previewViewH + 8f) continue;
             int bitWidth = Recipe.Inputs[i].ext.BitWidth;
             float hitR = bitWidth > 1 ? Math.Max(10f, bitWidth * 2f) * scale / 2f + 6f : pinR + 6f;
 
@@ -468,7 +529,8 @@ public sealed class MacroDialog
         }
         for (int i = 0; i < Recipe.Outputs.Count; i++)
         {
-            float py = cy + Recipe.OutputOffsets[i] * h;
+            float py = chipTop + Recipe.OutputOffsets[i] * h;
+            if (py < _previewViewTop - 8f || py > _previewViewTop + _previewViewH + 8f) continue;
             int bitWidth = Recipe.Outputs[i].ext.BitWidth;
             float hitR = bitWidth > 1 ? Math.Max(10f, bitWidth * 2f) * scale / 2f + 6f : pinR + 6f;
 
@@ -483,29 +545,50 @@ public sealed class MacroDialog
         var (_, cy, _, h, _) = PreviewChipRect();
 
         if (_dragInputIdx >= 0)
-            Recipe.InputOffsets[_dragInputIdx] = Clamp((m.Y - cy) / h);
+            Recipe.InputOffsets[_dragInputIdx] = Clamp(isInput: true, (m.Y + _previewScrollY - cy) / h);
         if (_dragOutputIdx >= 0)
-            Recipe.OutputOffsets[_dragOutputIdx] = Clamp((m.Y - cy) / h);
+            Recipe.OutputOffsets[_dragOutputIdx] = Clamp(isInput: false, (m.Y + _previewScrollY - cy) / h);
     }
 
-    private static float Clamp(float t) => t < 0.08f ? 0.08f : (t > 0.92f ? 0.92f : t);
+    private float Clamp(bool isInput, float t)
+    {
+        int count = isInput ? Recipe?.Inputs.Count ?? 1 : Recipe?.Outputs.Count ?? 1;
+        float margin = ChipElement.PinMargin(count);
+        return t < margin ? margin : (t > 1f - margin ? 1f - margin : t);
+    }
 
     private (float cx, float cy, float w, float h, float scale) PreviewChipRect()
     {
         if (Recipe is null) return (0, 0, 0, 0, 1f);
 
-        const int TopLabelH = 26;
-        const int BottomHintH = 22;
         float availW = _previewRect.Width - 24;
-        float availH = _previewRect.Height - TopLabelH - BottomHintH;
+        float availH = _previewRect.Height - PreviewTopLabelH - PreviewBottomHintH;
+        if (availW <= 0f || availH <= 0f) return (0, 0, 0, 0, 1f);
 
-        float scale = MathF.Min(availW / Recipe.Width, availH / Recipe.Height) * 0.88f;
+        int maxPins = Math.Max(Recipe.Inputs.Count, Recipe.Outputs.Count);
+        float widthFit = availW / Recipe.Width;
+        float heightFit = availH / Recipe.Height;
+
+        // Превью не должно превращать 30 пинов в 5 пикселей: шаг между
+        // соседними пинами остаётся читаемым, а лишнее уходит в прокрутку.
+        float spacingFit = maxPins > 1
+            ? MinPreviewPinStep * (maxPins + 1) / Recipe.Height
+            : 1f;
+
+        // И никогда больше 1:1 — иначе «размер» в окне не совпадает с чипом на холсте.
+        float scale = MathF.Min(widthFit, MathF.Max(heightFit, spacingFit));
+        scale = MathF.Min(scale, 1f);
         if (scale <= 0f) scale = 1f;
 
         float w = Recipe.Width * scale;
         float h = Recipe.Height * scale;
         float cx = _previewRect.X + (_previewRect.Width - w) / 2f;
-        float cy = _previewRect.Y + TopLabelH + (availH - h) / 2f;
+        _previewViewTop = _previewRect.Y + PreviewTopLabelH;
+        _previewViewH = availH;
+        float cy = _previewViewTop + (h <= availH ? (availH - h) / 2f : 0f);
+
+        _previewMaxScroll = Math.Max(0, (int)MathF.Ceiling(h - availH));
+        _previewScrollY = Math.Clamp(_previewScrollY, 0, _previewMaxScroll);
         return (cx, cy, w, h, scale);
     }
 
@@ -598,6 +681,18 @@ public sealed class MacroDialog
                 Recipe.OutputOffsets[idx], Recipe.OutputPinColors[idx], sw);
         }
 
+        if (_maxScroll > 0)
+        {
+            int totalRows = Math.Max(Recipe.Inputs.Count, Recipe.Outputs.Count);
+            int shownRows = Math.Max(1, (int)(_listViewport.Height / RowH));
+            float trackH = _listViewport.Height;
+            float thumbH = Math.Max(24f, trackH * shownRows / totalRows);
+            float thumbY = _listViewport.Y + (trackH - thumbH) * (_scrollY / (float)_maxScroll);
+            var track = new RRect(_bounds.X + _bounds.Width - 10, _listViewport.Y, 6, trackH);
+            Raylib.DrawRectangleRec(track, new RColor(40, 46, 62, 255));
+            Raylib.DrawRectangleRec(new RRect(track.X, thumbY, 6, thumbH), new RColor(110, 140, 190, 255));
+        }
+
         DrawButton(_resetRect, "Reset", m, ButtonBg, ButtonBgHover, ButtonBorder, TextPrimary);
         DrawButton(_cancelRect, "Cancel", m, ButtonBg, ButtonBgHover, ButtonBorder, TextPrimary);
 
@@ -665,10 +760,15 @@ public sealed class MacroDialog
             14, TextSecondary);
 
         var (cx, cy, w, h, scale) = PreviewChipRect();
+        float chipTop = cy - _previewScrollY;
+
+        Raylib.BeginScissorMode((int)_previewRect.X, (int)_previewViewTop,
+            (int)_previewRect.Width, (int)_previewViewH);
+
         var body = new RColor(BodyColor.R, BodyColor.G, BodyColor.B, (byte)255);
 
-        Raylib.DrawRectangle((int)cx + 3, (int)cy + 3, (int)w, (int)h, new RColor(0, 0, 0, 60));
-        Raylib.DrawRectangle((int)cx, (int)cy, (int)w, (int)h, body);
+        Raylib.DrawRectangle((int)cx + 3, (int)chipTop + 3, (int)w, (int)h, new RColor(0, 0, 0, 60));
+        Raylib.DrawRectangle((int)cx, (int)chipTop, (int)w, (int)h, body);
 
         var gridColor = new RColor(255, 255, 255, 28);
         float cellPx = GridCellPx * scale;
@@ -676,17 +776,17 @@ public sealed class MacroDialog
         if (cellPx >= 4f)
         {
             for (float gx = cx + cellPx; gx < cx + w - 0.5f; gx += cellPx)
-                Raylib.DrawLine((int)gx, (int)cy, (int)gx, (int)(cy + h), gridColor);
-            for (float gy = cy + cellPx; gy < cy + h - 0.5f; gy += cellPx)
+                Raylib.DrawLine((int)gx, (int)chipTop, (int)gx, (int)(chipTop + h), gridColor);
+            for (float gy = chipTop + cellPx; gy < chipTop + h - 0.5f; gy += cellPx)
                 Raylib.DrawLine((int)cx, (int)gy, (int)(cx + w), (int)gy, gridColor);
         }
 
-        Raylib.DrawRectangleLines((int)cx, (int)cy, (int)w, (int)h, RColor.White);
+        Raylib.DrawRectangleLines((int)cx, (int)chipTop, (int)w, (int)h, RColor.White);
 
         string label = string.IsNullOrEmpty(Name) ? "?" : Name;
         RColor labelColor = string.IsNullOrEmpty(Name) ? new RColor(200, 200, 200, 140) : RColor.White;
         int tw = Raylib.MeasureText(label, 22);
-        Raylib.DrawText(label, (int)(cx + (w - tw) / 2), (int)(cy + h / 2 - 11), 22, labelColor);
+        Raylib.DrawText(label, (int)(cx + (w - tw) / 2), (int)(chipTop + h / 2 - 11), 22, labelColor);
 
         float pinR = Layout.VisualPinRadius * scale;
         var defaultColor = new RColor(WireColor.R, WireColor.G, WireColor.B, (byte)255);
@@ -694,7 +794,7 @@ public sealed class MacroDialog
 
         for (int i = 0; i < Recipe.Inputs.Count; i++)
         {
-            float py = cy + Recipe.InputOffsets[i] * h;
+            float py = chipTop + Recipe.InputOffsets[i] * h;
             bool dragged = i == _dragInputIdx;
             var c = Recipe.InputPinColors[i] is SDColor ic
                 ? new RColor(ic.R, ic.G, ic.B, (byte)255) : defaultColor;
@@ -720,7 +820,7 @@ public sealed class MacroDialog
         }
         for (int i = 0; i < Recipe.Outputs.Count; i++)
         {
-            float py = cy + Recipe.OutputOffsets[i] * h;
+            float py = chipTop + Recipe.OutputOffsets[i] * h;
             bool dragged = i == _dragOutputIdx;
             var c = Recipe.OutputPinColors[i] is SDColor oc
                 ? new RColor(oc.R, oc.G, oc.B, (byte)255) : defaultColor;
@@ -747,7 +847,25 @@ public sealed class MacroDialog
             Raylib.DrawText(lbl, (int)(cx + w - (isBus ? pinR * 2 : pinR) - 6 - lw), (int)(py - 8), 14, lblColor);
         }
 
-        Raylib.DrawText("drag pins along sides to reposition",
+        Raylib.EndScissorMode();
+
+        if (_previewMaxScroll > 0)
+        {
+            float trackH = _previewViewH;
+            float thumbH = MathF.Max(24f, trackH * _previewViewH / (_previewViewH + _previewMaxScroll));
+            float thumbY = _previewViewTop
+                + (trackH - thumbH) * (_previewScrollY / (float)_previewMaxScroll);
+            var track = new RRect(_previewRect.X + _previewRect.Width - 9,
+                _previewViewTop, 6, trackH);
+            Raylib.DrawRectangleRec(track, new RColor(40, 46, 62, 255));
+            Raylib.DrawRectangleRec(new RRect(track.X, thumbY, 6, thumbH),
+                new RColor(110, 140, 190, 255));
+        }
+
+        string hint = _previewMaxScroll > 0
+            ? "scroll preview \u2022 drag pins along sides"
+            : "drag pins along sides to reposition";
+        Raylib.DrawText(hint,
             (int)_previewRect.X + 12,
             (int)(_previewRect.Y + _previewRect.Height - 20),
             12, TextMuted);

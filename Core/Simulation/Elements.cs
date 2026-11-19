@@ -36,6 +36,13 @@ public abstract class Element
 
     public void ResetPinLabels() { _inputLabels = null; _outputLabels = null; }
 
+    /// <summary>Подгоняет список подписей под новую разрядность, сохраняя пользовательские имена.</summary>
+    protected static void ResizeLabels(List<string> labels, int count, Func<int, string> defaultName)
+    {
+        while (labels.Count < count) labels.Add(defaultName(labels.Count));
+        if (labels.Count > count) labels.RemoveRange(count, labels.Count - count);
+    }
+
     protected static void Set(OutputPin pin, bool value) => pin.SetValue(value);
     protected static void Set(OutputPin pin, LogicState state) => pin.SetValue(state);
 }
@@ -64,6 +71,9 @@ public sealed class InElement : Element
         BitWidth = Math.Clamp(width, 1, 32);
         In = Enumerable.Range(0, BitWidth).Select(_ => new InputPin()).ToArray();
         Out.BitWidth = BitWidth;
+        Out.ResetBusStates();
+        ResizeLabels(InputLabels, BitWidth, i => (i + 1).ToString());
+        ResizeLabels(OutputLabels, 1, _ => "1");
 
         foreach (var pin in In) pin.SetValue(LogicState.Zero);
         Out.SetValue(LogicState.Zero);
@@ -89,11 +99,20 @@ public sealed class InElement : Element
                 for (int i = 0; i < BitWidth; i++) Out.BusStates[i] = In[i].State;
             }
 
-            bool anyOne = false;
+            bool anyConflict = false, anyOne = false, anyDriven = false;
             for (int i = 0; i < BitWidth; i++)
-                if (Out.BusStates[i] == LogicState.One) anyOne = true;
+            {
+                var s = Out.BusStates[i];
+                if (s == LogicState.Conflict) anyConflict = true;
+                else if (s == LogicState.One) anyOne = true;
+                if (s != LogicState.HighZ) anyDriven = true;
+            }
+            for (int i = BitWidth; i < 32; i++) Out.BusStates[i] = LogicState.HighZ;
 
-            Set(Out, anyOne ? LogicState.One : LogicState.Zero);
+            if (anyConflict) Set(Out, LogicState.Conflict);
+            else if (anyOne) Set(Out, LogicState.One);
+            else if (anyDriven) Set(Out, LogicState.Zero);
+            else Set(Out, LogicState.HighZ);
         }
     }
 
@@ -133,6 +152,9 @@ public sealed class OutElement : Element
         BitWidth = Math.Clamp(width, 1, 32);
         InternalOut = Enumerable.Range(0, BitWidth).Select(_ => new OutputPin()).ToArray();
         In.BitWidth = BitWidth;
+        In.ResetBusStates();
+        ResizeLabels(InputLabels, 1, _ => "1");
+        ResizeLabels(OutputLabels, BitWidth, i => (i + 1).ToString());
     }
 
     public override void Evaluate()
@@ -174,6 +196,166 @@ public sealed class NandElement : Element
     }
 }
 
+/// <summary>Трёхсостоятельный буфер: E=1 → данные, E=0 → Z.</summary>
+public sealed class TriStateBufferElement : Element
+{
+    public override string Name => "3STATE";
+
+    public InputPin Data { get; } = new();
+    public InputPin Enable { get; } = new();
+    public OutputPin Out { get; } = new();
+
+    public override IReadOnlyList<InputPin> Inputs => new[] { Data, Enable };
+    public override IReadOnlyList<OutputPin> Outputs => new[] { Out };
+
+    protected override IEnumerable<string> DefaultInputLabels() => new[] { "D", "E" };
+    protected override IEnumerable<string> DefaultOutputLabels() => new[] { "Y" };
+
+    public override void Evaluate()
+    {
+        var e = Enable.State;
+
+        // Неподключённый/висящий enable трактуем как выключенный: выход Z, а не X.
+        if (e == LogicState.Zero || e == LogicState.HighZ)
+        {
+            Set(Out, LogicState.HighZ);
+            return;
+        }
+        if (e == LogicState.Conflict)
+        {
+            Set(Out, LogicState.Conflict);
+            return;
+        }
+
+        Set(Out, Data.State);
+    }
+}
+
+/// <summary>Слабый источник логической единицы (аналог подтяжки к VCC).</summary>
+public sealed class PullUpElement : Element
+{
+    public override string Name => "PULL UP";
+
+    public OutputPin Out { get; } = new();
+
+    public override IReadOnlyList<InputPin> Inputs => Array.Empty<InputPin>();
+    public override IReadOnlyList<OutputPin> Outputs => new[] { Out };
+
+    protected override IEnumerable<string> DefaultOutputLabels() => new[] { "Y" };
+
+    public PullUpElement() => Out.Weak = true;
+
+    public override void Evaluate() => Set(Out, LogicState.One);
+}
+
+/// <summary>Слабый источник логического нуля (аналог подтяжки к GND).</summary>
+public sealed class PullDownElement : Element
+{
+    public override string Name => "PULL DOWN";
+
+    public OutputPin Out { get; } = new();
+
+    public override IReadOnlyList<InputPin> Inputs => Array.Empty<InputPin>();
+    public override IReadOnlyList<OutputPin> Outputs => new[] { Out };
+
+    protected override IEnumerable<string> DefaultOutputLabels() => new[] { "Y" };
+
+    public PullDownElement() => Out.Weak = true;
+
+    public override void Evaluate() => Set(Out, LogicState.Zero);
+}
+
+/// <summary>Элемент с внутренним состоянием, который обновляется один раз за такт симуляции.</summary>
+public interface ITickable
+{
+    void Advance();
+}
+
+public sealed class ClockElement : Element, ITickable
+{
+    public override string Name => "CLK";
+
+    /// <summary>Полный период в тактах (половина — высокий уровень).</summary>
+    public int PeriodTicks { get; private set; } = 60;
+
+    private int _phase;
+
+    public OutputPin Out { get; } = new();
+    public override IReadOnlyList<InputPin> Inputs => Array.Empty<InputPin>();
+    public override IReadOnlyList<OutputPin> Outputs => new[] { Out };
+
+    protected override IEnumerable<string> DefaultOutputLabels() => new[] { "Q" };
+
+    public ClockElement() => SetPeriod(PeriodTicks);
+
+    public void SetPeriod(int ticks)
+    {
+        PeriodTicks = Math.Clamp(ticks, 2, 600);
+        _phase = 0;
+        Set(Out, LogicState.Zero);
+    }
+
+    public void Advance()
+    {
+        int half = Math.Max(1, PeriodTicks / 2);
+        if (++_phase < half) return;
+        _phase = 0;
+        Set(Out, Out.State == LogicState.One ? LogicState.Zero : LogicState.One);
+    }
+
+    // Выходом управляет Advance(), поэтому повторные проходы Evaluate() его не трогают.
+    public override void Evaluate() { }
+}
+
+public sealed class DelayElement : Element, ITickable
+{
+    public override string Name => "DELAY";
+
+    public int DelayTicks { get; private set; } = 8;
+
+    private LogicState[][] _buffer = Array.Empty<LogicState[]>();
+    private int _head;
+
+    public InputPin In { get; } = new();
+    public OutputPin Out { get; } = new();
+
+    public override IReadOnlyList<InputPin> Inputs => new[] { In };
+    public override IReadOnlyList<OutputPin> Outputs => new[] { Out };
+
+    protected override IEnumerable<string> DefaultInputLabels() => new[] { "D" };
+    protected override IEnumerable<string> DefaultOutputLabels() => new[] { "Q" };
+
+    public DelayElement(int delayTicks = 8) => SetDelay(delayTicks);
+
+    public void SetDelay(int ticks)
+    {
+        DelayTicks = Math.Clamp(ticks, 1, 120);
+        _buffer = Enumerable.Range(0, DelayTicks + 1)
+            .Select(_ => new LogicState[32])
+            .ToArray();
+        _head = 0;
+        Out.ResetBusStates();
+        Set(Out, LogicState.HighZ);
+    }
+
+    public void Advance()
+    {
+        // Пиши в текущую ячейку, читаем самую старую — получаем задержку ровно в DelayTicks тактов.
+        var slot = _buffer[_head];
+        slot[0] = In.State;
+        for (int i = 1; i < 32; i++) slot[i] = LogicState.HighZ;
+
+        int oldest = (_head + 1) % _buffer.Length;
+        var src = _buffer[oldest];
+
+        for (int i = 0; i < 32; i++) Out.BusStates[i] = src[i];
+        Set(Out, Circuit.Aggregate(src));
+        _head = oldest;
+    }
+
+    public override void Evaluate() { }
+}
+
 public sealed class BusMerger : Element
 {
     public override string Name => "MERGE";
@@ -195,33 +377,37 @@ public sealed class BusMerger : Element
         BitWidth = Math.Clamp(width, 2, 32);
         In = Enumerable.Range(0, BitWidth).Select(_ => new InputPin()).ToArray();
 
-        InputLabels.Clear();
-        for (int i = 0; i < BitWidth; i++) InputLabels.Add((i + 1).ToString());
-
-        OutputLabels.Clear();
-        OutputLabels.Add("Bus");
+        ResizeLabels(InputLabels, BitWidth, i => (i + 1).ToString());
+        ResizeLabels(OutputLabels, 1, _ => "Bus");
         Out.BitWidth = BitWidth;
+        Out.ResetBusStates();
     }
 
     public override void Evaluate()
     {
         bool anyConflict = false;
         bool anyOne = false;
+        bool anyDriven = false;
 
         for (int i = 0; i < BitWidth; i++)
         {
-            var state = In[i].State;
-            if (state == LogicState.HighZ) state = LogicState.Zero;
+            // Если на вход уже пришла шина, берём её младший бит, а не агрегат.
+            var state = In[i].BitWidth > 1 ? In[i].BusStates[0] : In[i].State;
 
             Out.BusStates[i] = state;
 
             if (state == LogicState.Conflict) anyConflict = true;
-            if (state == LogicState.One) anyOne = true;
+            else if (state == LogicState.One) anyOne = true;
+            if (state != LogicState.HighZ) anyDriven = true;
         }
+
+        // Старые биты выше текущей разрядности не должны просачиваться в шину.
+        for (int i = BitWidth; i < 32; i++) Out.BusStates[i] = LogicState.HighZ;
 
         if (anyConflict) Set(Out, LogicState.Conflict);
         else if (anyOne) Set(Out, LogicState.One);
-        else Set(Out, LogicState.Zero);
+        else if (anyDriven) Set(Out, LogicState.Zero);
+        else Set(Out, LogicState.HighZ);
     }
 }
 
@@ -246,33 +432,27 @@ public sealed class BusSplitter : Element
         BitWidth = Math.Clamp(width, 2, 32);
         Out = Enumerable.Range(0, BitWidth).Select(_ => new OutputPin()).ToArray();
 
-        InputLabels.Clear();
-        InputLabels.Add("Bus");
-
-        OutputLabels.Clear();
-        for (int i = 0; i < BitWidth; i++) OutputLabels.Add((i + 1).ToString());
+        ResizeLabels(InputLabels, 1, _ => "Bus");
+        ResizeLabels(OutputLabels, BitWidth, i => (i + 1).ToString());
         In.BitWidth = BitWidth;
+        In.ResetBusStates();
     }
 
     public override void Evaluate()
     {
-        if (In.State == LogicState.HighZ)
-        {
-            foreach (var o in Out) Set(o, LogicState.HighZ);
-        }
-        else
-        {
-            for (int i = 0; i < BitWidth; i++)
-                Out[i].SetValue(In.BusStates[i]);
-        }
+        // Агрегат In.State может быть рассинхронизирован с битами — ориентируемся только на биты.
+        for (int i = 0; i < BitWidth; i++)
+            Out[i].SetValue(In.BusStates[i]);
     }
 }
 
-public sealed class ChipElement : Element
+public sealed class ChipElement : Element, ITickable
 {
     public const int MinWidth = 80;
     public const int MinHeight = 50;
-    public const int MinPinSpacing = 18;
+    // Диаметр визуального пина 20 px + зона попадания 14 px: 18 px плотно
+    // склеивали сотни пинов в сплошную полосу.
+    public const int MinPinSpacing = 28;
 
     private readonly List<Element> _inner;
     private readonly List<Wire> _innerWires;
@@ -280,6 +460,12 @@ public sealed class ChipElement : Element
     private readonly (InputPin inner, OutputPin ext)[] _outputs;
     private readonly Dictionary<Element, (int X, int Y)> _innerPositions = new();
     private readonly Dictionary<Pin, float> _pinOffsets = new();
+
+    // Кэш выходных пинов внутренней схемы: нужен, чтобы понять, что комбинационная
+    // логика уже успокоилась и ещё один проход ничего не изменит.
+    private OutputPin[] _trackedOutputs = Array.Empty<OutputPin>();
+    private LogicState[] _outputSnapshot = Array.Empty<LogicState>();
+    private bool _snapshotValid;
 
     private string _name;
     private int _width = DefaultWidth;
@@ -322,6 +508,9 @@ public sealed class ChipElement : Element
         }
 
         ApplyDefaultOffsets();
+        // Высота по умолчанию 80 px рассчитана на единичные пины. Чип со 1000
+        // входами не должен существовать с такой высотой даже между вызовами SetSize().
+        SetSize(_width, _height);
     }
 
     private void ApplyDefaultOffsets()
@@ -334,6 +523,14 @@ public sealed class ChipElement : Element
 
     public static float DefaultOffset(int count, int index)
         => count == 1 ? 0.5f : (index + 1f) / (count + 1f);
+
+    /// <summary>
+    /// Отступ от края в долях высоты. Должен быть меньше шага между пинами,
+    /// иначе при большом количестве входов все крайние пины схлопываются
+    /// в одну точку (1000 входов → ~80 пинов на 0.08).
+    /// </summary>
+    public static float PinMargin(int count)
+        => Math.Min(0.08f, 0.5f / Math.Max(1, count + 1));
 
     public IReadOnlyList<Element> Inner => _inner;
     public List<Wire> InnerWires => _innerWires;
@@ -381,9 +578,16 @@ public sealed class ChipElement : Element
 
     public void SetOffset(Pin pin, float value)
     {
-        if (value < 0.08f) value = 0.08f;
-        if (value > 0.92f) value = 0.92f;
-        _pinOffsets[pin] = value;
+        int count = PinCount(pin);
+        float margin = PinMargin(count);
+        _pinOffsets[pin] = Math.Clamp(value, margin, 1f - margin);
+    }
+
+    private int PinCount(Pin pin)
+    {
+        foreach (var p in Inputs) if (ReferenceEquals(p, pin)) return Inputs.Count;
+        foreach (var p in Outputs) if (ReferenceEquals(p, pin)) return Outputs.Count;
+        return 1;
     }
 
     public void ResyncExternalLabels()
@@ -416,32 +620,87 @@ public sealed class ChipElement : Element
         }
     }
 
+    public void Advance()
+    {
+        foreach (var el in _inner)
+            if (el is ITickable tickable)
+                tickable.Advance();
+    }
+
     public override void Evaluate()
     {
         foreach (var (ext, inner) in _inputs)
         {
-            if (ext.BitWidth > 1)
-            {
-                for (int i = 0; i < 32; i++) inner.BusStates[i] = ext.BusStates[i];
-            }
+            int bits = Math.Min(ext.BitWidth, 32);
+            for (int i = 0; i < 32; i++)
+                inner.BusStates[i] = i < bits ? ext.BusStates[i] : LogicState.HighZ;
             inner.SetValue(ext.State);
         }
 
+        _snapshotValid = false;
         int passes = _inner.Count + 2;
         for (int p = 0; p < passes; p++)
         {
             Circuit.ResolveInputs(_inner, _innerWires);
             foreach (var el in _inner) el.Evaluate();
+
+            // Раньше делалось ровно N+2 проходов всегда. Для вложенных чипов это
+            // превращалось в O(N^2) по каждому тику (и хуже по глубине вложенности):
+            // один 8-битный сумматор из макросов не влезал в кадр.
+            // Как только ни один выход не изменился — неподвижная точка достигнута.
+            if (OutputsUnchanged()) break;
         }
 
         foreach (var (inner, ext) in _outputs)
         {
-            if (ext.BitWidth > 1)
-            {
-                for (int i = 0; i < 32; i++) ext.BusStates[i] = inner.BusStates[i];
-            }
+            int bits = Math.Min(ext.BitWidth, 32);
+            for (int i = 0; i < 32; i++)
+                ext.BusStates[i] = i < bits ? inner.BusStates[i] : LogicState.HighZ;
             ext.SetValue(inner.State);
         }
+    }
+
+    /// <summary>
+    /// Сравнивает выходы внутренних элементов с предыдущим проходом.
+    /// Первый вызов только запоминает состояние и возвращает false.
+    /// </summary>
+    private bool OutputsUnchanged()
+    {
+        var current = _inner.SelectMany(el => el.Outputs).ToArray();
+
+        if (_trackedOutputs.Length != current.Length)
+        {
+            _trackedOutputs = current;
+            _outputSnapshot = new LogicState[current.Length * 33];
+            _snapshotValid = false;
+        }
+        else
+        {
+            for (int i = 0; i < current.Length; i++)
+            {
+                if (ReferenceEquals(_trackedOutputs[i], current[i])) continue;
+                _trackedOutputs = current;
+                _outputSnapshot = new LogicState[current.Length * 33];
+                _snapshotValid = false;
+                break;
+            }
+        }
+
+        bool unchanged = _snapshotValid;
+        int idx = 0;
+        foreach (var pin in _trackedOutputs)
+        {
+            if (_snapshotValid && _outputSnapshot[idx] != pin.State) unchanged = false;
+            _outputSnapshot[idx++] = pin.State;
+
+            for (int i = 0; i < 32; i++)
+            {
+                if (_snapshotValid && _outputSnapshot[idx] != pin.BusStates[i]) unchanged = false;
+                _outputSnapshot[idx++] = pin.BusStates[i];
+            }
+        }
+        _snapshotValid = true;
+        return unchanged;
     }
 
     public ChipElement Clone()
@@ -466,26 +725,28 @@ public sealed class ChipElement : Element
                 (OutputPin)MapPin(fo, w.From, map[fo]),
                 (InputPin)MapPin(to, w.To, map[to]));
             foreach (var wp in w.Waypoints) nw.Waypoints.Add(wp);
-            nw.IsBus = w.IsBus;
+            nw.IsBus = nw.IsValid && w.IsBus;
             nw.Layer = w.Layer;
             newWires.Add(nw);
         }
 
         var newInputs = new List<(InputPin ext, InputPin inner)>();
-        foreach (var (_, inner) in _inputs)
+        foreach (var (ext, inner) in _inputs)
         {
             var owner = FindOwner(inner);
             if (owner is null) continue;
-            var newExt = new InputPin { BitWidth = inner.BitWidth };
+            // Разрядность внешнего пина берём из ext: внутренний In[0] у шинного IN
+            // всегда однобитный, и клонирование превращало шину в обычный провод.
+            var newExt = new InputPin { BitWidth = ext.BitWidth };
             newInputs.Add((newExt, (InputPin)MapPin(owner, inner, map[owner])));
         }
 
         var newOutputs = new List<(InputPin inner, OutputPin ext)>();
-        foreach (var (inner, _) in _outputs)
+        foreach (var (inner, ext) in _outputs)
         {
             var owner = FindOwner(inner);
             if (owner is null) continue;
-            var newExt = new OutputPin { BitWidth = inner.BitWidth };
+            var newExt = new OutputPin { BitWidth = ext.BitWidth };
             newOutputs.Add(((InputPin)MapPin(owner, inner, map[owner]), newExt));
         }
 
@@ -540,6 +801,11 @@ public sealed class ChipElement : Element
         Element copy = el switch
         {
             NandElement => new NandElement(),
+            TriStateBufferElement => new TriStateBufferElement(),
+            PullUpElement => new PullUpElement(),
+            PullDownElement => new PullDownElement(),
+            ClockElement => new ClockElement(),
+            DelayElement de => new DelayElement(de.DelayTicks),
             InElement ie => new InElement(ie.BitWidth),
             OutElement oe => new OutElement(oe.BitWidth),
             BusMerger bm => new BusMerger(bm.BitWidth),
@@ -548,8 +814,14 @@ public sealed class ChipElement : Element
             _ => new NandElement()
         };
 
+        copy.Layer = el.Layer;
         copy.BodyColor = el.BodyColor;
         copy.WireColor = el.WireColor;
+
+        if (el is ClockElement oldClock && copy is ClockElement newClock)
+            newClock.SetPeriod(oldClock.PeriodTicks);
+        if (el is DelayElement oldDelay && copy is DelayElement newDelay)
+            newDelay.SetDelay(oldDelay.DelayTicks);
 
         copy.InputLabels.Clear();
         copy.InputLabels.AddRange(el.InputLabels);

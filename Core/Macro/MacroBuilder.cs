@@ -20,6 +20,8 @@ public sealed class MacroRecipe
     public int Height = Element.DefaultHeight;
     public List<Wire> ExternalRewire = new();
     public Vector2 Center;
+    public Vector2 CameraTarget;
+    public float CameraZoom = 1f;
 }
 
 public static class MacroBuilder
@@ -91,14 +93,16 @@ public static class MacroBuilder
             {
                 var nw = new Wire(w.From, extIn[ie]);
                 foreach (var wp in w.Waypoints) nw.Waypoints.Add(wp);
-                nw.IsBus = w.IsBus;
+                nw.IsBus = nw.IsValid && w.IsBus;
+                nw.Layer = w.Layer;
                 recipe.ExternalRewire.Add(nw);
             }
             else if (fromIn && !toIn && fromOwner is OutElement oe)
             {
                 var nw = new Wire(extOut[oe], w.To);
                 foreach (var wp in w.Waypoints) nw.Waypoints.Add(wp);
-                nw.IsBus = w.IsBus;
+                nw.IsBus = nw.IsValid && w.IsBus;
+                nw.Layer = w.Layer;
                 recipe.ExternalRewire.Add(nw);
             }
         }
@@ -108,7 +112,7 @@ public static class MacroBuilder
 
     public static ChipElement Commit(
         Circuit circuit, MacroRecipe recipe, string name,
-        SDColor bodyColor, SDColor wireColor)
+        SDColor bodyColor, SDColor wireColor, LayerSet? layers = null)
     {
         var chip = new ChipElement(
             name,
@@ -120,6 +124,7 @@ public static class MacroBuilder
         chip.BodyColor = bodyColor;
         chip.WireColor = wireColor;
         chip.SetSize(recipe.Width, recipe.Height);
+        if (layers is not null) chip.LayerState.CopyFrom(layers);
 
         for (int i = 0; i < recipe.InputLabels.Count && i < chip.InputLabels.Count; i++)
             chip.InputLabels[i] = recipe.InputLabels[i];

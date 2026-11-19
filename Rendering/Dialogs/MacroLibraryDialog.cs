@@ -14,6 +14,10 @@ public sealed class MacroLibraryDialog
     public ChipTemplate? EditRequested { get; private set; }
     public ChipTemplate? AttachRequested { get; private set; }
     public ChipTemplate? DeleteRequested { get; private set; }
+    public Palette.BuiltinPart? PartSelected { get; private set; }
+
+    private enum Tab { Parts, Macros }
+    private Tab _tab = Tab.Parts;
 
     private List<ChipTemplate>? _templates;
     private List<ChipTemplate>? _library;
@@ -25,6 +29,8 @@ public sealed class MacroLibraryDialog
     private const int MaxRows = 8;
     private const int SmallBtnW = 96;
     private const int PreviewSize = 48;
+    private const int MaxMiniPinsPerSide = 12;
+    private const float MinMiniBox = 12f;
 
     private static readonly RColor DialogBg = new(22, 24, 32, 250);
     private static readonly RColor DialogBorderOuter = new(60, 80, 120, 80);
@@ -47,6 +53,8 @@ public sealed class MacroLibraryDialog
 
     private RRect _bounds;
     private RRect _closeRect;
+    private RRect _tabPartsRect;
+    private RRect _tabMacrosRect;
     private readonly List<(RRect Row, RRect BtEdit, RRect BtAttach, RRect BtDelete, int Index)> _rows = new();
     private int _headerY;
     private int _subHeaderY;
@@ -59,8 +67,10 @@ public sealed class MacroLibraryDialog
         EditRequested = null;
         AttachRequested = null;
         DeleteRequested = null;
+        PartSelected = null;
+        _tab = Tab.Parts;
 
-        int rows = Math.Min(Math.Max(library.Count, 1), MaxRows);
+        int rows = Math.Min(Math.Max(library.Count, Palette.DefaultLibrary.Count), MaxRows);
         int h = Pad * 2 + 30 + 24 + rows * RowH + 20 + BtnH;
 
         int sw = Raylib.GetScreenWidth();
@@ -79,6 +89,8 @@ public sealed class MacroLibraryDialog
         int y = (int)_bounds.Y + Pad;
 
         _headerY = y;
+        _tabPartsRect = new RRect((int)_bounds.X + Width - Pad - 212, y, 100, 26);
+        _tabMacrosRect = new RRect((int)_bounds.X + Width - Pad - 106, y, 100, 26);
         y += 30;
         _subHeaderY = y;
         y += 24;
@@ -89,7 +101,8 @@ public sealed class MacroLibraryDialog
         int attX = delX - SmallBtnW - 6;
         int editX = attX - SmallBtnW - 6;
 
-        int shown = Math.Min(_library.Count, MaxRows);
+        int count = _tab == Tab.Parts ? Palette.DefaultLibrary.Count : _library.Count;
+        int shown = Math.Min(count, MaxRows);
         for (int i = 0; i < shown; i++)
         {
             var row = new RRect(x, y + i * RowH, rowW, RowH - 6);
@@ -99,7 +112,7 @@ public sealed class MacroLibraryDialog
             _rows.Add((row, btEdit, btAttach, btDelete, i));
         }
 
-        int rowsShown = Math.Min(Math.Max(_library.Count, 1), MaxRows);
+        int rowsShown = Math.Min(Math.Max(count, 1), MaxRows);
         int closeY = y + rowsShown * RowH + 16;
         _closeRect = new RRect((int)_bounds.X + Width - Pad - 140, closeY, 140, BtnH);
     }
@@ -113,6 +126,7 @@ public sealed class MacroLibraryDialog
         EditRequested = null;
         AttachRequested = null;
         DeleteRequested = null;
+        PartSelected = null;
     }
 
     public void Update()
@@ -129,6 +143,31 @@ public sealed class MacroLibraryDialog
         if (Raylib.CheckCollisionPointRec(m, _closeRect))
         {
             Close();
+            return;
+        }
+
+        if (Raylib.CheckCollisionPointRec(m, _tabPartsRect) && _tab != Tab.Parts)
+        {
+            _tab = Tab.Parts;
+            RebuildRows();
+            return;
+        }
+        if (Raylib.CheckCollisionPointRec(m, _tabMacrosRect) && _tab != Tab.Macros)
+        {
+            _tab = Tab.Macros;
+            RebuildRows();
+            return;
+        }
+
+        if (_tab == Tab.Parts)
+        {
+            foreach (var (_, _, btAttach, _, idx) in _rows)
+            {
+                if (idx < 0 || idx >= Palette.DefaultLibrary.Count) continue;
+                if (!Raylib.CheckCollisionPointRec(m, btAttach)) continue;
+                PartSelected = Palette.DefaultLibrary[idx];
+                return;
+            }
             return;
         }
 
@@ -169,60 +208,71 @@ public sealed class MacroLibraryDialog
         Raylib.DrawRectangleLinesEx(_bounds, 2f, DialogBorder);
 
         int x = (int)_bounds.X + Pad;
+        var m = Raylib.GetMousePosition();
 
-        Raylib.DrawText("Macro Library", x, _headerY, 26, TextPrimary);
+        Raylib.DrawText("Library", x, _headerY, 26, TextPrimary);
         Raylib.DrawRectangle(x, _headerY + 32, 64, 2, AccentEdit);
 
-        Raylib.DrawText($"{_library.Count} macro{(_library.Count == 1 ? "" : "s")} detached from the palette",
+        DrawTab(_tabPartsRect, "PARTS", _tab == Tab.Parts, m);
+        DrawTab(_tabMacrosRect, "MACROS", _tab == Tab.Macros, m);
+
+        Raylib.DrawText(
+            _tab == Tab.Parts
+                ? $"{Palette.DefaultLibrary.Count} built-in parts — select, then click canvas to place"
+                : $"{_library.Count} macro{(_library.Count == 1 ? "" : "s")} detached from the palette",
             x, _subHeaderY, 14, SectionLabel);
 
-        if (_library.Count == 0)
+        if (_tab == Tab.Macros && _library.Count == 0)
         {
-            Raylib.DrawText("Library is empty.",
+            Raylib.DrawText("Macro library is empty.",
                 x + 8, _subHeaderY + 30, 18, TextMuted);
             Raylib.DrawText("Right-click a macro in the palette → Unstar to detach it here.",
                 x + 8, _subHeaderY + 56, 14, TextMuted);
         }
 
-        var m = Raylib.GetMousePosition();
-
         foreach (var (row, btEdit, btAttach, btDelete, idx) in _rows)
         {
-            if (idx < 0 || idx >= _library.Count) continue;
-            var tpl = _library[idx];
+            string name, info;
+            Element previewEl;
+
+            if (_tab == Tab.Parts)
+            {
+                if (idx < 0 || idx >= Palette.DefaultLibrary.Count) continue;
+                var part = Palette.DefaultLibrary[idx];
+                name = part.Name;
+                info = part.Hint;
+                previewEl = part.Create();
+            }
+            else
+            {
+                if (idx < 0 || idx >= _library.Count) continue;
+                var tpl = _library[idx];
+                name = tpl.Name;
+                info = $"{tpl.Prototype.Inputs.Count} in • {tpl.Prototype.Outputs.Count} out • {tpl.Prototype.Width}×{tpl.Prototype.Height}";
+                previewEl = tpl.Prototype;
+            }
 
             bool rowHover = Raylib.CheckCollisionPointRec(m, row);
             Raylib.DrawRectangleRec(row, rowHover ? RowBgHover : RowBg);
             Raylib.DrawRectangleLinesEx(row, 1f, RowBorder);
 
             var preview = new RRect(row.X + 10, row.Y + (row.Height - PreviewSize) / 2, PreviewSize, PreviewSize);
-            Raylib.DrawRectangleRec(preview, new RColor(tpl.BodyColor.R, tpl.BodyColor.G, tpl.BodyColor.B, (byte)255));
+            Raylib.DrawRectangleRec(preview, new RColor(16, 18, 25, 255));
             Raylib.DrawRectangleLinesEx(preview, 1f, new RColor(80, 90, 115, 255));
-
-            int pinY = (int)preview.Y + 8;
-            int pinCount = Math.Min(tpl.Prototype.Inputs.Count, 4);
-            for (int k = 0; k < pinCount; k++)
-            {
-                var pinColor = tpl.Prototype.Inputs[k].Color ?? tpl.WireColor;
-                Raylib.DrawCircle((int)preview.X, pinY + k * 10, 3,
-                    new RColor(pinColor.R, pinColor.G, pinColor.B, (byte)255));
-            }
-            pinCount = Math.Min(tpl.Prototype.Outputs.Count, 4);
-            for (int k = 0; k < pinCount; k++)
-            {
-                var pinColor = tpl.Prototype.Outputs[k].Color ?? tpl.WireColor;
-                Raylib.DrawCircle((int)(preview.X + preview.Width), pinY + k * 10, 3,
-                    new RColor(pinColor.R, pinColor.G, pinColor.B, (byte)255));
-            }
+            DrawMiniHologram(preview, previewEl);
 
             int textX = (int)preview.X + (int)preview.Width + 14;
-            Raylib.DrawText(tpl.Name, textX, (int)row.Y + 12, 19, TextPrimary);
-            Raylib.DrawText($"{tpl.Prototype.Inputs.Count} in • {tpl.Prototype.Outputs.Count} out • {tpl.Prototype.Width}×{tpl.Prototype.Height}",
-                textX, (int)row.Y + 36, 13, TextSecondary);
+            Raylib.DrawText(name, textX, (int)row.Y + 12, 19, TextPrimary);
+            Raylib.DrawText(info, textX, (int)row.Y + 36, 13, TextSecondary);
 
-            DrawSmallButton(btEdit, "Edit", m, AccentEdit);
-            DrawSmallButton(btAttach, "Attach", m, AccentAttach);
-            DrawSmallButton(btDelete, "Delete", m, AccentDelete);
+            if (_tab == Tab.Parts)
+                DrawSmallButton(btAttach, "Place", m, AccentAttach);
+            else
+            {
+                DrawSmallButton(btEdit, "Edit", m, AccentEdit);
+                DrawSmallButton(btAttach, "Attach", m, AccentAttach);
+                DrawSmallButton(btDelete, "Delete", m, AccentDelete);
+            }
         }
 
         bool ch = Raylib.CheckCollisionPointRec(m, _closeRect);
@@ -232,6 +282,91 @@ public sealed class MacroLibraryDialog
         Raylib.DrawText("Close",
             (int)(_closeRect.X + (_closeRect.Width - ctw) / 2),
             (int)(_closeRect.Y + (_closeRect.Height - 18) / 2), 18, TextPrimary);
+    }
+
+    /// <summary>Масштабная копия голограммы размещения: реальные размеры, контур, пины и имя.</summary>
+    private static void DrawMiniHologram(RRect area, Element el)
+    {
+        float scale = Math.Min(area.Width / (float)el.Width, area.Height / (float)el.Height);
+        if (scale <= 0f) scale = 1f;
+        float w = el.Width * scale;
+        float h = el.Height * scale;
+
+        // Чип на сотни пинов не должен схлопываться в линию шириной в долю пикселя.
+        if (w < MinMiniBox)
+        {
+            float k = MinMiniBox / w;
+            w = MinMiniBox;
+            h = Math.Min(area.Height, h * k);
+        }
+        if (h < MinMiniBox)
+        {
+            float k = MinMiniBox / h;
+            h = MinMiniBox;
+            w = Math.Min(area.Width, w * k);
+        }
+
+        float x = area.X + (area.Width - w) / 2f;
+        float y = area.Y + (area.Height - h) / 2f;
+
+        var box = new RRect(x, y, w, h);
+        var ghostLine = new RColor((byte)235, (byte)245, (byte)255, (byte)200);
+
+        Raylib.DrawRectangleLinesEx(box, 1f, ghostLine);
+
+        float pinScale = h / (float)Math.Max(1, el.Height);
+        DrawMiniPins(el, isInput: true, x, y, pinScale, ghostLine);
+        DrawMiniPins(el, isInput: false, x + w, y, pinScale, ghostLine);
+
+        string label = el.Name;
+        int tw = Raylib.MeasureText(label, 10);
+        if (tw <= w - 4)
+            Raylib.DrawText(label, (int)(x + (w - tw) / 2f), (int)(y + (h - 10) / 2f), 10, ghostLine);
+    }
+
+    private static void DrawMiniPins(Element el, bool isInput, float x, float y,
+                                     float pinScale, RColor color)
+    {
+        int count = isInput ? el.Inputs.Count : el.Outputs.Count;
+        if (count == 0) return;
+
+        int shown = Math.Min(count, MaxMiniPinsPerSide);
+        for (int k = 0; k < shown; k++)
+        {
+            int i = shown == 1 ? count / 2
+                : (int)MathF.Round(k * (count - 1) / (float)(shown - 1));
+
+            Pin pin = isInput ? el.Inputs[i] : el.Outputs[i];
+            int py = MiniPinY(el, pin, isInput, i);
+            bool isBus = pin.BitWidth > 1;
+            DrawMiniPin(x, y + py * pinScale, color, isBus);
+        }
+    }
+
+    private static int MiniPinY(Element el, Pin pin, bool isInput, int index)
+        => el is ChipElement chip
+            ? (int)(chip.GetOffset(pin) * chip.Height)
+            : Layout.PinY(0, el.Height, isInput ? el.Inputs.Count : el.Outputs.Count, index);
+
+    private static void DrawMiniPin(float x, float y, RColor color, bool isBus)
+    {
+        if (isBus) Raylib.DrawRectangleLines((int)(x - 2), (int)(y - 2), 4, 4, color);
+        else Raylib.DrawCircleLines((int)x, (int)y, 2f, color);
+    }
+
+    private static void DrawTab(RRect r, string label, bool active, Vector2 m)
+    {
+        bool hover = Raylib.CheckCollisionPointRec(m, r);
+        Raylib.DrawRectangleRec(r, active
+            ? new RColor(58, 82, 122, 255)
+            : hover ? ButtonBgHover : ButtonBg);
+        Raylib.DrawRectangleLinesEx(r, 1f, active ? DialogBorder : ButtonBorder);
+
+        int tw = Raylib.MeasureText(label, 15);
+        Raylib.DrawText(label,
+            (int)(r.X + (r.Width - tw) / 2),
+            (int)(r.Y + (r.Height - 15) / 2), 15,
+            active ? TextPrimary : TextSecondary);
     }
 
     private static void DrawSmallButton(RRect r, string label, Vector2 m, RColor accent)

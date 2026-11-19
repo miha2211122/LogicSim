@@ -10,8 +10,6 @@ public sealed class LayerInfo
 /// <summary>Набор слоёв одного контекста редактирования (корень или микросхема).</summary>
 public sealed class LayerSet
 {
-    public const int MaxLayers = 8;
-
     private readonly List<LayerInfo> _layers = new();
 
     public LayerSet()
@@ -39,9 +37,25 @@ public sealed class LayerSet
 
     public bool AddLayer()
     {
-        if (_layers.Count >= MaxLayers) return false;
-        _layers.Add(new LayerInfo { Name = $"L{_layers.Count + 1}" });
+        int n = _layers.Count + 1;
+        while (_layers.Exists(l => l.Name == $"L{n}")) n++;
+        _layers.Add(new LayerInfo { Name = $"L{n}" });
         Active = _layers.Count - 1;
+        return true;
+    }
+
+    /// <summary>Удаляет слой; последний слой удалить нельзя.</summary>
+    public bool RemoveLayer(int index)
+    {
+        if (_layers.Count <= 1 || index < 0 || index >= _layers.Count) return false;
+
+        _layers.RemoveAt(index);
+        Active = Math.Clamp(index < Active ? Active - 1 : Active, 0, _layers.Count - 1);
+        if (!_layers[Active].Visible)
+        {
+            int fallback = _layers.FindIndex(l => l.Visible);
+            if (fallback >= 0) Active = fallback;
+        }
         return true;
     }
 
