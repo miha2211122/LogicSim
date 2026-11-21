@@ -33,6 +33,11 @@ public sealed class WireDrawer
         if (hit.Pin is not InputPin input) return null;
 
         if (FromPin.BitWidth != input.BitWidth) return null;
+        if (circuit.ContainsWire(FromPin, input))
+        {
+            Cancel();
+            return null;
+        }
 
         var wire = circuit.Connect(FromPin, input);
         foreach (var wp in Waypoints) wire.Waypoints.Add(wp);

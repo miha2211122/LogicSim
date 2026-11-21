@@ -7,6 +7,9 @@ public abstract class Pin
     public LogicState State { get; protected set; } = LogicState.HighZ;
     public bool Value => State == LogicState.One;
 
+    /// <summary>Приходит ли в пин хоть один провод (обновляется NetSolver на каждом проходе).</summary>
+    public bool IsWired { get; internal set; }
+
     /// <summary>Массив состояний для шин (до 32 бит). По умолчанию все HighZ.</summary>
     private LogicState[] _busStates = Enumerable.Repeat(LogicState.HighZ, 32).ToArray();
     public LogicState[] BusStates

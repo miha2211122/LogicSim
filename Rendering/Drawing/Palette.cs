@@ -34,6 +34,22 @@ public sealed class Palette
     };
 
     public Tool SelectedTool { get; private set; } = Tool.None;
+
+    /// <summary>Ограничение набора деталей для режима обучения. null — свободная песочница.</summary>
+    public IReadOnlySet<Tool>? AllowedTools { get; private set; }
+    public bool TemplatesAllowed { get; private set; } = true;
+    public string? LastDeniedTool { get; set; }
+
+    public bool IsAllowed(Tool tool) => AllowedTools is null || AllowedTools.Contains(tool);
+
+    public void SetAllowedTools(IEnumerable<Tool>? tools, bool templatesAllowed = true)
+    {
+        AllowedTools = tools?.ToHashSet();
+        TemplatesAllowed = templatesAllowed;
+        LastDeniedTool = null;
+        if (AllowedTools is not null && SelectedTool != Tool.None && !IsAllowed(SelectedTool))
+            ClearSelection();
+    }
     public ChipTemplate? SelectedTemplate { get; private set; }
     public int PendingCount { get; private set; } = 0;
     public bool HasElements { get; set; }
@@ -172,6 +188,7 @@ public sealed class Palette
 
         MakeMacroPressed = false;
         LibraryButtonPressed = false;
+        LastDeniedTool = null;
         bool changed = false;
 
         var m = Raylib.GetMousePosition();
@@ -219,17 +236,19 @@ public sealed class Palette
         {
             foreach (var (rect, tool, _) in _tools)
             {
-                if (Raylib.CheckCollisionPointRec(m, rect))
-                {
-                    if (SelectedTool == tool && SelectedTemplate is null) PendingCount++;
-                    else { SelectedTool = tool; SelectedTemplate = null; PendingCount = 1; }
-                    changed = true;
-                    break;
-                }
+                if (!Raylib.CheckCollisionPointRec(m, rect)) continue;
+                if (!IsAllowed(tool)) { LastDeniedTool = tool.ToString(); break; }
+                if (SelectedTool == tool && SelectedTemplate is null) PendingCount++;
+                else { SelectedTool = tool; SelectedTemplate = null; PendingCount = 1; }
+                changed = true;
+                break;
             }
 
             RebuildTemplateRects();
-            foreach (var (rect, idx) in _templateRects)
+            IEnumerable<(RRect, int)> templateRects = AllowedTools is null || TemplatesAllowed
+                ? _templateRects
+                : Array.Empty<(RRect, int)>();
+            foreach (var (rect, idx) in templateRects)
             {
                 if (idx < 0 || idx >= Templates.Count) continue;
                 if (Raylib.CheckCollisionPointRec(m, rect))
@@ -309,6 +328,7 @@ public sealed class Palette
 
         if (hotkey is { } tool)
         {
+            if (!IsAllowed(tool)) { LastDeniedTool = tool.ToString(); return false; }
             if (SelectedTool == tool && SelectedTemplate is null) PendingCount++;
             else { SelectedTool = tool; SelectedTemplate = null; PendingCount = 1; }
             return true;
@@ -421,7 +441,10 @@ public sealed class Palette
         {
             bool hover = Raylib.CheckCollisionPointRec(m, rect);
             bool sel = SelectedTool == tool && SelectedTemplate is null;
-            DrawButton(rect, label, sel, hover, new RColor((byte)80, (byte)130, (byte)200, (byte)255),
+            RColor toolCol = IsAllowed(tool)
+                ? new RColor((byte)80, (byte)130, (byte)200, (byte)255)
+                : new RColor((byte)48, (byte)50, (byte)58, (byte)255);
+            DrawButton(rect, label, sel && IsAllowed(tool), hover && IsAllowed(tool), toolCol,
                 sel && PendingCount > 1 ? PendingCount.ToString() : null);
         }
 

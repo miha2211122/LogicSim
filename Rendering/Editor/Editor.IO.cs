@@ -26,6 +26,7 @@ public sealed partial class Editor
                 root.Layers);
 
             CurrentSavePath = path;
+            AutoSave.Clear();
             StatusMessage = $"Saved -> {path}";
         }
         catch (Exception ex) { StatusMessage = $"Save error: {ex.Message}"; }
@@ -57,9 +58,25 @@ public sealed partial class Editor
             _clipboard.CancelHologram();
 
             CurrentSavePath = path;
+            AutoSave.Clear();
             StatusMessage = $"Loaded <- {path}";
         }
         catch (Exception ex) { StatusMessage = $"Load error: {ex.Message}"; }
         _statusTimer = 5f;
+    }
+
+    public void RestoreRecentWireColor(SaveFile save) =>
+        _recentWireColor = SaveSystem.FromHexOrNull(save.RecentWireColorHex);
+
+    /// <summary>Фоновая резервная копия корневой схемы. Ошибки записи не должны мешать игре.</summary>
+    public void WriteAutoSave(Camera2D camera)
+    {
+        try
+        {
+            var root = _stack.Last();
+            AutoSave.Write(root.Circuit, root.Layout, camera.Target, camera.Zoom,
+                _palette.Templates, _palette.Library, root.Layers, _recentWireColor, CurrentSavePath);
+        }
+        catch { }
     }
 }

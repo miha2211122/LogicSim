@@ -229,12 +229,11 @@ public sealed class GameRenderer
             rawPts.AddRange(editor.PendingWaypoints);
             rawPts.Add(editor.MouseWorld);
 
-            if (editor.WireStartElement is BusMerger || (editor.WireStartElement is InElement ie && ie.BitWidth > 1))
+            // Ширина провода определяется пином-источником, а не типом элемента:
+            // шинный выход макроса (ChipElement) тоже должен тянуться лентой.
+            int strips = Math.Clamp(editor.WireStartPin?.BitWidth ?? 1, 1, 32);
+            if (strips > 1)
             {
-                int strips = 8;
-                if (editor.WireStartElement is BusMerger bm) strips = bm.BitWidth;
-                else if (editor.WireStartElement is InElement ie2) strips = ie2.BitWidth;
-
                 var dummyStates = new LogicState[32];
                 for (int i = 0; i < 32; i++) dummyStates[i] = LogicState.Zero;
 

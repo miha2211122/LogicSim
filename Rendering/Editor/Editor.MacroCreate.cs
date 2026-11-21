@@ -28,7 +28,9 @@ public sealed partial class Editor
         foreach (var lbl in recipe.OutputLabels) maxLabelW = Math.Max(maxLabelW, Raylib.MeasureText(lbl, 14));
 
         int w = Math.Max(130, maxLabelW * 2 + 60);
-        int h = Math.Max(80, Math.Max(recipe.Inputs.Count, recipe.Outputs.Count) * ChipElement.MinPinSpacing + 20);
+        int h = ChipElement.MinHeightFor(
+            recipe.Inputs.Select(x => (Pin)x.ext).ToList(),
+            recipe.Outputs.Select(x => (Pin)x.ext).ToList());
 
         recipe.CameraTarget = camera.Target;
         recipe.CameraZoom = camera.Zoom;

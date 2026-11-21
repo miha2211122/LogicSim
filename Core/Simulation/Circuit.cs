@@ -19,27 +19,38 @@ public sealed class Circuit
     private LogicState[] _before = Array.Empty<LogicState>();
     private LogicState[] _after = Array.Empty<LogicState>();
 
+    // Топология меняется при подключении/удалении проводов и элементов.
+    // Один только снимок пинов это не ловит: новый провод ещё не записал значение.
+    private bool _dirty = true;
+    private int _wireCount = -1;
+    private int _elementCount = -1;
+
+    public void MarkDirty() => _dirty = true;
+
     public void StepOnce() => _stepRequested = true;
 
     public T Add<T>(T element) where T : Element
     {
         _elements.Add(element);
+        _dirty = true;
         return element;
     }
 
-    public void AddElement(Element el) => _elements.Add(el);
+    public void AddElement(Element el) { _elements.Add(el); _dirty = true; }
 
     public void Clear()
     {
         var targets = _wires.Select(w => w.To).Distinct().ToArray();
         _elements.Clear();
         _wires.Clear();
+        _dirty = true;
         foreach (var pin in targets) pin.ResetBusStates();
     }
 
     public void Remove(Element element)
     {
         _elements.Remove(element);
+        _dirty = true;
         PruneOrphanWires();
     }
 
@@ -48,13 +59,22 @@ public sealed class Circuit
         foreach (var el in elements.ToList())
             _elements.Remove(el);
 
+        _dirty = true;
         PruneOrphanWires();
     }
 
     public void RemoveWire(Wire wire)
     {
         if (!_wires.Remove(wire)) return;
+        _dirty = true;
         ClearBusTargetIfDisconnected(wire.To);
+    }
+
+    /// <summary>Обновить признак шины у проводов после смены разрядности пинов.</summary>
+    public void RefreshBusFlags()
+    {
+        foreach (var w in _wires)
+            w.IsBus = w.From.BitWidth > 1 || w.To.BitWidth > 1;
     }
 
     private void PruneOrphanWires()
@@ -65,6 +85,7 @@ public sealed class Circuit
         if (orphaned.Count == 0) return;
 
         _wires.RemoveAll(w => orphaned.Contains(w));
+        _dirty = true;
         foreach (var w in orphaned)
             ClearBusTargetIfDisconnected(w.To);
     }
@@ -74,12 +95,23 @@ public sealed class Circuit
     {
         if (!_wires.Any(w => w.IsBus && ReferenceEquals(w.To, pin)))
             pin.ResetBusStates();
+
+        // Одиночный провод больше не подключён — сбрасываем старое значение,
+        // чтобы вход не оставался залипшим после удаления провода.
+        // Входы IN-элементов — это пользовательские переключатели, их не трогаем.
+        if (!_wires.Any(w => ReferenceEquals(w.To, pin)) &&
+            OwnerOf(pin) is not InElement)
+            pin.SetValue(LogicState.HighZ);
     }
+
+    public bool ContainsWire(OutputPin from, InputPin to) =>
+        _wires.Any(w => ReferenceEquals(w.From, from) && ReferenceEquals(w.To, to));
 
     public Wire Connect(OutputPin from, InputPin to)
     {
         var w = new Wire(from, to);
         _wires.Add(w);
+        _dirty = true;
         return w;
     }
 
@@ -100,9 +132,16 @@ public sealed class Circuit
         bool tick = Running || _stepRequested;
         _stepRequested = false;
 
+        bool topoChanged = _dirty
+            || _elements.Count != _elementCount
+            || _wires.Count != _wireCount;
+        _dirty = false;
+        _elementCount = _elements.Count;
+        _wireCount = _wires.Count;
+
         // Внешние изменения (клик по IN, провода, загрузка) видны по снимку пинов.
         _current = Capture(_current);
-        bool changed = !Same(_current, _last);
+        bool changed = topoChanged || !Same(_current, _last);
 
         if (tick)
         {
@@ -117,6 +156,17 @@ public sealed class Circuit
         // Пустой такт: время не изменило выходы и входы не трогали — не считаем ничего.
         if (!changed) return;
 
+        Recompute();
+    }
+
+    /// <summary>
+    /// Пересчитать цепь без тактирования. Вызывается при подключении проводов
+    /// и для внешних контекстов, пока пользователь редактирует вложенный макрос.
+    /// </summary>
+    public void Settle() => Recompute();
+
+    private void Recompute()
+    {
         // Один такт = все вычисления: крутим до тех пор, пока состояние не перестанет меняться.
         int maxPasses = Math.Max(2, _elements.Count + 2);
         for (int p = 0; p < maxPasses; p++)
@@ -184,6 +234,10 @@ public sealed class Circuit
         if (anyOne) return LogicState.One;
         return anyDriven ? LogicState.Zero : LogicState.HighZ;
     }
+
+    /// <summary>Подключённый провод всегда считается определённым: Z — только при полном отсутствии проводов.</summary>
+    internal static LogicState Driven(LogicState s)
+        => s == LogicState.HighZ ? LogicState.Zero : s;
 
     public static LogicState Combine(LogicState a, LogicState b)
     {
@@ -254,8 +308,10 @@ internal sealed class NetSolver
     private readonly Dictionary<InputPin, LogicState> _weakDrivers = new();
     private readonly Dictionary<InputPin, LogicState[]> _busBits = new();
     private readonly Dictionary<InputPin, LogicState[]> _weakBusBits = new();
+    private readonly Dictionary<InputPin, LogicState[]> _weakBusBase = new();
     private readonly BusBuffers _strongBuffers = new();
     private readonly BusBuffers _weakBuffers = new();
+    private readonly BusBuffers _baseBuffers = new();
 
     public void Resolve(IReadOnlyList<Element> elements, IReadOnlyList<Wire> wires)
     {
@@ -263,10 +319,21 @@ internal sealed class NetSolver
         _weakDrivers.Clear();
         _busBits.Clear();
         _weakBusBits.Clear();
+        _weakBusBase.Clear();
         _strongBuffers.Reset();
         _weakBuffers.Reset();
+        _baseBuffers.Reset();
         _strongBuffers.Trim();
         _weakBuffers.Trim();
+        _baseBuffers.Trim();
+
+        // Пин считается подключённым, если в него приходит валидный провод.
+        // Эти флаги нужны элементам, чтобы не выдавать Z при частично
+        // подключённых входах.
+        foreach (var el in elements)
+            foreach (var inp in el.Inputs) inp.IsWired = false;
+        foreach (var w in wires)
+            if (w.IsValid) w.To.IsWired = true;
 
         if (wires.Count == 0) return;
 
@@ -283,15 +350,24 @@ internal sealed class NetSolver
             {
                 if (!bus.TryGetValue(w.To, out var bits))
                 {
+                    // Сохраняем то, что было на пине до слабой шины: при сильном
+                    // скалярном драйвере слабые биты должны исчезнуть, но не
+                    // затерть состояние, внедрённое родительским чипом.
+                    if (ReferenceEquals(buffers, _weakBuffers))
+                    {
+                        var original = _baseBuffers.Rent(w.To);
+                        Array.Copy(w.To.BusStates, original, 32);
+                        _weakBusBase[w.To] = original;
+                    }
                     bits = buffers.Rent(w.To);
                     bus[w.To] = bits;
                 }
                 for (int i = 0; i < 32; i++)
-                    bits[i] = Circuit.Combine(bits[i], w.From.BusStates[i]);
+                    bits[i] = Circuit.Combine(bits[i], Circuit.Driven(w.From.BusStates[i]));
             }
             else
             {
-                var s = w.From.State;
+                var s = Circuit.Driven(w.From.State);
                 scalar[w.To] = scalar.TryGetValue(w.To, out var prev)
                     ? Circuit.Combine(prev, s)
                     : s;
@@ -318,9 +394,22 @@ internal sealed class NetSolver
 
         foreach (var (pin, bits) in _weakBusBits)
         {
-            if (_busBits.ContainsKey(pin) || _drivers.ContainsKey(pin)) continue;
+            if (_busBits.ContainsKey(pin)) continue;
+            if (_drivers.ContainsKey(pin))
+            {
+                if (_weakBusBase.TryGetValue(pin, out var original))
+                {
+                    for (int i = 0; i < 32; i++)
+                        pin.BusStates[i] = original[i];
+                }
+                else pin.ResetBusStates();
+                continue;
+            }
             if (_weakDrivers.TryGetValue(pin, out var scalar))
+            {
                 bits[0] = Circuit.Combine(bits[0], scalar);
+                _weakDrivers.Remove(pin);
+            }
 
             for (int i = 0; i < 32; i++)
                 pin.BusStates[i] = bits[i];

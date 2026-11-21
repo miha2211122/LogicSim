@@ -58,6 +58,13 @@ public sealed class MacroLibraryDialog
     private readonly List<(RRect Row, RRect BtEdit, RRect BtAttach, RRect BtDelete, int Index)> _rows = new();
     private int _headerY;
     private int _subHeaderY;
+    private IReadOnlySet<Palette.Tool>? _allowedTools;
+    private readonly List<int> _partIndices = new();
+
+    public void SetAllowedTools(IReadOnlySet<Palette.Tool>? tools) => _allowedTools = tools;
+
+    private bool IsPartAllowed(Palette.BuiltinPart part)
+        => _allowedTools is null || _allowedTools.Contains(part.Tool);
 
     public void Open(List<ChipTemplate> templates, List<ChipTemplate> library)
     {
@@ -70,7 +77,11 @@ public sealed class MacroLibraryDialog
         PartSelected = null;
         _tab = Tab.Parts;
 
-        int rows = Math.Min(Math.Max(library.Count, Palette.DefaultLibrary.Count), MaxRows);
+        _partIndices.Clear();
+        for (int i = 0; i < Palette.DefaultLibrary.Count; i++)
+            if (IsPartAllowed(Palette.DefaultLibrary[i])) _partIndices.Add(i);
+
+        int rows = Math.Min(Math.Max(library.Count, _partIndices.Count), MaxRows);
         int h = Pad * 2 + 30 + 24 + rows * RowH + 20 + BtnH;
 
         int sw = Raylib.GetScreenWidth();
@@ -101,7 +112,9 @@ public sealed class MacroLibraryDialog
         int attX = delX - SmallBtnW - 6;
         int editX = attX - SmallBtnW - 6;
 
-        int count = _tab == Tab.Parts ? Palette.DefaultLibrary.Count : _library.Count;
+        int count = _tab == Tab.Parts
+            ? _partIndices.Count
+            : (_allowedTools is null ? _library.Count : 0);
         int shown = Math.Min(count, MaxRows);
         for (int i = 0; i < shown; i++)
         {
@@ -163,9 +176,9 @@ public sealed class MacroLibraryDialog
         {
             foreach (var (_, _, btAttach, _, idx) in _rows)
             {
-                if (idx < 0 || idx >= Palette.DefaultLibrary.Count) continue;
+                if (idx < 0 || idx >= _partIndices.Count) continue;
                 if (!Raylib.CheckCollisionPointRec(m, btAttach)) continue;
-                PartSelected = Palette.DefaultLibrary[idx];
+                PartSelected = Palette.DefaultLibrary[_partIndices[idx]];
                 return;
             }
             return;
@@ -218,7 +231,7 @@ public sealed class MacroLibraryDialog
 
         Raylib.DrawText(
             _tab == Tab.Parts
-                ? $"{Palette.DefaultLibrary.Count} built-in parts — select, then click canvas to place"
+                ? $"{_partIndices.Count} built-in parts — select, then click canvas to place"
                 : $"{_library.Count} macro{(_library.Count == 1 ? "" : "s")} detached from the palette",
             x, _subHeaderY, 14, SectionLabel);
 
@@ -237,8 +250,8 @@ public sealed class MacroLibraryDialog
 
             if (_tab == Tab.Parts)
             {
-                if (idx < 0 || idx >= Palette.DefaultLibrary.Count) continue;
-                var part = Palette.DefaultLibrary[idx];
+                if (idx < 0 || idx >= _partIndices.Count) continue;
+                var part = Palette.DefaultLibrary[_partIndices[idx]];
                 name = part.Name;
                 info = part.Hint;
                 previewEl = part.Create();

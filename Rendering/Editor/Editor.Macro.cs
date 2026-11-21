@@ -73,13 +73,14 @@ public sealed partial class Editor
             {
                 top.OwnerChip.LayerState.CopyFrom(top.Layers);
                 top.OwnerChip.SyncInner(top.Circuit.Elements, top.Circuit.WiresList);
-                top.OwnerChip.ResyncExternalLabels();
             }
 
             foreach (var el in top.OwnerChip.Inner)
                 if (top.Layout.TryGet(el, out var p))
                     top.OwnerChip.SetInnerPosition(el, p.X, p.Y);
         }
+
+        SyncChipChain();
 
         if (top.TemplateName is { } tname)
             RebuildInstancesFromTemplate(tname);
@@ -183,6 +184,7 @@ public sealed partial class Editor
         proto.Rename(newName);
         proto.BodyColor = _macroDialog.BodyColor;
         proto.WireColor = _macroDialog.WireColor;
+        proto.SyncExternalPins();
         proto.SetSize(recipe.Width, recipe.Height);
 
         for (int i = 0; i < recipe.InputLabels.Count && i < proto.InputLabels.Count; i++)

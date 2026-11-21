@@ -20,8 +20,14 @@ dotnet run --project LogicSim.Game.csproj
 
 - **New Circuit** — новый пустой проект.
 - **Load Circuit** — список сохранений; файл выбирается кликом, кнопка `x` удаляет его, `Load` открывает.
-- **Tutorial / GitHub** — открывает https://github.com/miha2211122/LogicSim.
+- **Tutorial / GitHub / Releases** — `Tutorial` — обучение, `GitHub` — репозиторий, `Releases` — вкладка со списком релизов и ссылкой на GitHub Releases.
 - **Exit** — выход.
+
+---
+
+## Релизы
+
+Кнопка **Releases** в главном меню открывает вкладку с версиями, датами и основными изменениями. Кнопка **Open on GitHub** ведёт на https://github.com/miha2211122/LogicSim/releases, `Esc` или **Close** закрывают вкладку, колесо мыши прокручивает список.
 
 ---
 
@@ -133,3 +139,4 @@ dotnet run --project LogicSim.Game.csproj
 - В меню паузы (`Esc` в корне): `Continue`, `Save`, `Exit to Main Menu`.
 - Undo/redo хранят 100 снапшотов, включая слои, цвета, подписи пинов и разрядности.
 - Вставка и перемещение блокируются при пересечении с видимыми элементами.
+- Раз в 30 секунд делается резервная копия в `%APPDATA%\LogicSim\Saves\autosave.json`; в главном меню появляется кнопка **Continue (autosave)**. Ручной Save/Load удаляет копию; при восстановлении открывается тот же файл, что был до автосохранения.

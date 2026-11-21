@@ -7,11 +7,14 @@ namespace LogicSim.Game;
 
 public static class Program
 {
-    private enum GameState { MainMenu, Editor }
+    private enum GameState { MainMenu, TutorialMenu, Editor }
     private static GameState _state = GameState.MainMenu;
 
     private static Editor? _editor;
     private static MainMenu? _mainMenu;
+    private static TutorialMenu? _tutorialMenu;
+    private static readonly ReleasesDialog _releasesDialog = new();
+    private static TutorialProgress _progress = TutorialProgress.Load();
     private static PauseMenu _pauseMenu = new();
     private static GameRenderer? _renderer;
     private static MusicPlayer? _music;
@@ -19,6 +22,8 @@ public static class Program
 
     private static int _screenW;
     private static int _screenH;
+    private const float AutoSaveInterval = 30f;
+    private static float _autoSaveTimer;
 
     private static readonly string SavesDir = GetSavesDir();
     private static string GetSavesDir()
@@ -48,7 +53,7 @@ public static class Program
 
         try
         {
-            var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "xor.png");
+            var iconPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "icon.png");
             if (System.IO.File.Exists(iconPath))
             {
                 var img = Raylib.LoadImage(iconPath);
@@ -59,6 +64,8 @@ public static class Program
         catch { }
 
         _mainMenu = new MainMenu(SavesDir);
+        _mainMenu.SetProgress(_progress);
+        _tutorialMenu = new TutorialMenu();
 
         while (!Raylib.WindowShouldClose())
         {
@@ -70,36 +77,96 @@ public static class Program
 
             if (_state == GameState.MainMenu)
             {
+                if (_releasesDialog.IsOpen)
+                {
+                    _releasesDialog.Update();
+                    if (_releasesDialog.CloseRequested) _releasesDialog.Close();
+                }
+                else
+                {
                 _mainMenu.Update();
 
                 if (_mainMenu.ExitRequested) break;
 
-                if (_mainMenu.NewGameRequested)
+                if (_mainMenu.ContinueRequested && !_progress.IsUnlocked)
                 {
+                    _mainMenu.SetError("Finish all 10 tutorial levels to unlock the sandbox.");
+                }
+                else if (_mainMenu.ContinueRequested)
+                {
+                    SaveFile? save;
+                    try { save = SaveSystem.Load(AutoSave.Path); }
+                    catch (Exception ex)
+                    {
+                        save = null;
+                        _mainMenu.SetError($"Autosave failed: {ex.Message}");
+                    }
+                    if (save != null)
+                    {
+                        _mainMenu.SetError(null);
+                        OpenSave(save, save.SourcePath);
+                    }
+                }
+                else if (_mainMenu.NewGameRequested)
+                {
+                    _mainMenu.SetError(null);
                     CreateNewEditor();
                     _state = GameState.Editor;
                 }
+                else if (_mainMenu.TutorialRequested)
+                {
+                    _mainMenu.SetError(null);
+                    _tutorialMenu!.Open(_progress);
+                    _state = GameState.TutorialMenu;
+                }
+                else if (_mainMenu.ReleasesRequested)
+                {
+                    _mainMenu.SetError(null);
+                    _releasesDialog.Open();
+                }
                 else if (_mainMenu.LoadGameRequested && _mainMenu.LoadPath != null)
                 {
-                    CreateNewEditor();
-                    var save = SaveSystem.Load(_mainMenu.LoadPath);
+                    SaveFile? save;
+                    try { save = SaveSystem.Load(_mainMenu.LoadPath); }
+                    catch (Exception ex)
+                    {
+                        save = null;
+                        _mainMenu.SetError($"Load failed: {ex.Message}");
+                    }
                     if (save != null)
                     {
-                        SaveSystem.Apply(save, _editor!.Circuit, _editor.Layout,
-                            out var camTarget, out var camZoom,
-                            _editor.Palette.Templates, _editor.Palette.Library,
-                            _editor.Layers);
-                        _camera.Target = camTarget;
-                        _camera.Zoom = camZoom;
-                        _editor.CurrentSavePath = _mainMenu.LoadPath;
-                        _state = GameState.Editor;
+                        _mainMenu.SetError(null);
+                        OpenSave(save, _mainMenu.LoadPath);
                     }
+                }
                 }
 
                 Raylib.BeginDrawing();
                 _mainMenu.Draw();
+                _releasesDialog.Draw();
                 if (_music != null)
                     Raylib.DrawText(_music.Status, 20, Raylib.GetScreenHeight() - 52, 12, Color.Gray);
+                Raylib.EndDrawing();
+            }
+            else if (_state == GameState.TutorialMenu && _tutorialMenu != null)
+            {
+                _tutorialMenu.Update();
+
+                if (_tutorialMenu.BackRequested)
+                {
+                    _progress.Save();
+                    _mainMenu!.Refresh();
+                    _state = GameState.MainMenu;
+                }
+                else if (_tutorialMenu.StartRequested is { } level)
+                {
+                    CreateNewEditor();
+                    _editor!.StartTutorial(level, _progress);
+                    _state = GameState.Editor;
+                }
+
+                Raylib.BeginDrawing();
+                _tutorialMenu.Draw();
                 Raylib.EndDrawing();
             }
             else if (_state == GameState.Editor && _editor != null && _renderer != null)
@@ -119,6 +186,8 @@ public static class Program
                     if (_pauseMenu.MainMenuRequested)
                     {
                         _pauseMenu.Close();
+                        _editor.WriteAutoSave(_camera);
+                        _mainMenu.Refresh();
                         _state = GameState.MainMenu;
                         continue;
                     }
@@ -126,6 +195,28 @@ public static class Program
                 else
                 {
                     _editor.Update(ref _camera);
+
+                    if (_editor.TutorialExitRequested)
+                    {
+                        _editor = null;
+                        _tutorialMenu!.Open(_progress, Math.Clamp(_progress.CompletedCount + 1, 1, 10));
+                        _state = GameState.TutorialMenu;
+                        continue;
+                    }
+                    if (_editor.TutorialNextRequested)
+                    {
+                        int nextLevel = Math.Clamp((_editor.TutorialLevel?.Number ?? 0) + 1, 1, 10);
+                        // Макросы, созданные на предыдущих уровнях, должны быть доступны дальше.
+                        var templates = _editor.Palette.Templates.ToList();
+                        var library = _editor.Palette.Library.ToList();
+                        CreateNewEditor();
+                        _editor!.Palette.Templates.AddRange(templates);
+                        _editor.Palette.Library.AddRange(library);
+                        _editor!.StartTutorial(TutorialLevel.All[nextLevel - 1], _progress);
+                        _state = GameState.Editor;
+                        continue;
+                    }
+
                     if (_editor.IsPaused)
                     {
                         _editor.IsPaused = false;
@@ -133,7 +224,16 @@ public static class Program
                     }
                 }
 
-                _editor.Circuit.Step();
+                if (!_pauseMenu.IsOpen)
+                    _editor.StepSimulation();
+
+                _autoSaveTimer += Raylib.GetFrameTime();
+                if (!_editor.IsTutorial && _autoSaveTimer >= AutoSaveInterval)
+                {
+                    _autoSaveTimer = 0f;
+                    _editor.WriteAutoSave(_camera);
+                    _mainMenu.Refresh();
+                }
 
                 Raylib.BeginDrawing();
                 Raylib.ClearBackground(new Color((byte)18, (byte)18, (byte)24, (byte)255));
@@ -171,7 +271,8 @@ public static class Program
                 var loadRect = _editor.LoadButtonRect();
                 var backRect = _editor.BackButtonRect();
 
-                if (!_editor.AnyModalOpen && !_pauseMenu.IsOpen && Raylib.IsMouseButtonPressed(MouseButton.Left))
+                if (!_editor.AnyModalOpen && !_pauseMenu.IsOpen && !_editor.IsTutorial
+                    && Raylib.IsMouseButtonPressed(MouseButton.Left))
                 {
                     if (Raylib.CheckCollisionPointRec(hudMouse, saveRect))
                         _editor.RequestSave();
@@ -192,6 +293,7 @@ public static class Program
                 _editor.DrawLayerPanel();
                 _editor.DrawDialogs();
                 if (_editor.HelpVisible) _editor.DrawHelp();
+                _editor.DrawTutorialHud();
 
                 if (_pauseMenu.IsOpen) _pauseMenu.Draw();
 
@@ -199,9 +301,27 @@ public static class Program
             }
         }
 
+        if (_state == GameState.Editor && _editor?.IsTutorial != true)
+            _editor?.WriteAutoSave(_camera);
+
         _music?.Dispose();
         Raylib.CloseAudioDevice();
         Raylib.CloseWindow();
+    }
+
+    private static void OpenSave(SaveFile save, string? path)
+    {
+        CreateNewEditor();
+        SaveSystem.Apply(save, _editor!.Circuit, _editor.Layout,
+            out var camTarget, out var camZoom,
+            _editor.Palette.Templates, _editor.Palette.Library,
+            _editor.Layers);
+        _camera.Target = camTarget;
+        _camera.Zoom = camZoom;
+        _editor.RestoreRecentWireColor(save);
+        _editor.CurrentSavePath = path;
+        _autoSaveTimer = 0f;
+        _state = GameState.Editor;
     }
 
     private static void CreateNewEditor()

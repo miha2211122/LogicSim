@@ -1,4 +1,5 @@
-﻿using Raylib_cs;
+﻿using LogicSim.Game.Core;
+using Raylib_cs;
 using System.Numerics;
 using RRect = Raylib_cs.Rectangle;
 using RColor = Raylib_cs.Color;
@@ -7,10 +8,16 @@ namespace LogicSim.Game.Rendering;
 
 public sealed class MainMenu
 {
+    public bool ContinueRequested { get; private set; }
+    public bool TutorialRequested { get; private set; }
     public bool NewGameRequested { get; private set; }
     public bool LoadGameRequested { get; private set; }
+    public bool ReleasesRequested { get; private set; }
     public string? LoadPath { get; private set; }
     public bool ExitRequested { get; private set; }
+    public string? ErrorMessage { get; private set; }
+
+    public void SetError(string? message) => ErrorMessage = message;
 
     private const int BtnW = 260;
     private const int BtnH = 50;
@@ -28,16 +35,34 @@ public sealed class MainMenu
 
     private readonly LoadDialog _loadDialog = new();
     private readonly string _savesDir;
+    private bool _hasAutoSave;
+    private TutorialProgress? _progress;
+
+    public void SetProgress(TutorialProgress progress) => _progress = progress;
+    private bool Unlocked => _progress?.IsUnlocked == true;
 
     public MainMenu(string savesDir)
     {
         _savesDir = savesDir;
+        Refresh();
     }
+
+    /// <summary>Вызывается при возврате в меню: автосохранение могло появиться в этой сессии.</summary>
+    public void Refresh() => _hasAutoSave = AutoSave.Exists;
+
+    private int ButtonCount => (_hasAutoSave ? 1 : 0) + 6;
+    private int StartY => Raylib.GetScreenHeight() / 2 - (ButtonCount * (BtnH + Gap) - Gap) / 2;
 
     public void Update()
     {
+        // Файл мог появиться или быть удалён извне.
+        _hasAutoSave = AutoSave.Exists;
+
+        ContinueRequested = false;
+        TutorialRequested = false;
         NewGameRequested = false;
         LoadGameRequested = false;
+        ReleasesRequested = false;
         ExitRequested = false;
         LoadPath = null;
 
@@ -66,22 +91,40 @@ public sealed class MainMenu
             var m = Raylib.GetMousePosition();
             int sw = Raylib.GetScreenWidth();
             int sh = Raylib.GetScreenHeight();
-            int startY = sh / 2 - 120;
+            int startY = StartY;
             int cx = sw / 2 - BtnW / 2;
+            // Если автосохранение есть, Все кнопки после Continue сдвинуты на одну позицию.
+            int i = _hasAutoSave ? 1 : 0;
 
-            if (Raylib.CheckCollisionPointRec(m, new RRect(cx, startY, BtnW, BtnH)))
+            if (_hasAutoSave && Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, 0)))
             {
-                NewGameRequested = true;
+                ContinueRequested = true;
             }
-            else if (Raylib.CheckCollisionPointRec(m, new RRect(cx, startY + BtnH + Gap, BtnW, BtnH)))
+
+            if (Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, i)))
             {
-                _loadDialog.Open(_savesDir);
+                TutorialRequested = true;
+                i++;
             }
-            else if (Raylib.CheckCollisionPointRec(m, new RRect(cx, startY + (BtnH + Gap) * 2, BtnW, BtnH)))
+            else if (Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, i + 1)))
+            {
+                if (!Unlocked) ErrorMessage = "Finish all 10 tutorial levels to unlock the sandbox.";
+                else NewGameRequested = true;
+            }
+            else if (Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, i + 2)))
+            {
+                if (!Unlocked) ErrorMessage = "Finish all 10 tutorial levels to unlock the sandbox.";
+                else _loadDialog.Open(_savesDir);
+            }
+            else if (Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, i + 3)))
             {
                 OpenUrl("https://github.com/miha2211122/LogicSim");
             }
-            else if (Raylib.CheckCollisionPointRec(m, new RRect(cx, startY + (BtnH + Gap) * 3, BtnW, BtnH)))
+            else if (Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, i + 4)))
+            {
+                ReleasesRequested = true;
+            }
+            else if (Raylib.CheckCollisionPointRec(m, ButtonRect(cx, startY, i + 5)))
             {
                 ExitRequested = true;
             }
@@ -97,25 +140,59 @@ public sealed class MainMenu
 
         string title = "LogicSim";
         int tw = Raylib.MeasureText(title, 64);
-        Raylib.DrawText(title, sw / 2 - tw / 2, sh / 2 - 250, 64, TextPrimary);
+        Raylib.DrawText(title, sw / 2 - tw / 2, StartY - 112, 64, TextPrimary);
 
         string sub = "Digital Logic Simulator";
         int sw2 = Raylib.MeasureText(sub, 20);
-        Raylib.DrawText(sub, sw / 2 - sw2 / 2, sh / 2 - 170, 20, TextSecondary);
+        Raylib.DrawText(sub, sw / 2 - sw2 / 2, StartY - 36, 20, TextSecondary);
 
-        int startY = sh / 2 - 120;
+        int startY = StartY;
         int cx = sw / 2 - BtnW / 2;
         var m = Raylib.GetMousePosition();
+        int i = 0;
 
-        DrawButton(new RRect(cx, startY, BtnW, BtnH), "New Circuit", m, BtnAccent, BtnAccentHover);
-        DrawButton(new RRect(cx, startY + BtnH + Gap, BtnW, BtnH), "Load Circuit", m, BtnBlue, BtnBlueHover);
-        DrawButton(new RRect(cx, startY + (BtnH + Gap) * 2, BtnW, BtnH), "Tutorial / GitHub", m, BtnBg, BtnBgHover);
-        DrawButton(new RRect(cx, startY + (BtnH + Gap) * 3, BtnW, BtnH), "Exit", m, BtnBg, BtnBgHover);
+        if (_hasAutoSave)
+        {
+            string label = "Continue (autosave)";
+            if (AutoSave.LastWriteTime is { } t)
+                label += $" {t:HH:mm}";
+            DrawButton(ButtonRect(cx, startY, i), label, m, BtnAccent, BtnAccentHover);
+            i++;
+        }
+
+        string tutorialLabel = $"Tutorial  ({_progress?.CompletedCount ?? 0}/10)";
+        DrawButton(ButtonRect(cx, startY, i), tutorialLabel, m, BtnBg, BtnBgHover);
+        i++;
+
+        var lockedBase = new RColor(45, 48, 58, 255);
+        var lockedHover = new RColor(55, 58, 70, 255);
+        DrawButton(ButtonRect(cx, startY, i), Unlocked ? "New Circuit" : "New Circuit (LOCKED)", m,
+            Unlocked ? BtnBlue : lockedBase, Unlocked ? BtnBlueHover : lockedHover);
+        DrawButton(ButtonRect(cx, startY, i + 1), Unlocked ? "Load Circuit" : "Load Circuit (LOCKED)", m,
+            Unlocked ? BtnBlue : lockedBase, Unlocked ? BtnBlueHover : lockedHover);
+        DrawButton(ButtonRect(cx, startY, i + 2), "GitHub", m, BtnBg, BtnBgHover);
+        DrawButton(ButtonRect(cx, startY, i + 3), "Releases", m, BtnBg, BtnBgHover);
+        DrawButton(ButtonRect(cx, startY, i + 4), "Exit", m, BtnBg, BtnBgHover);
+
+        if (!Unlocked && ErrorMessage is null)
+            Raylib.DrawText("Complete the 10 tutorial levels to unlock the sandbox.",
+                sw / 2 - Raylib.MeasureText("Complete the 10 tutorial levels to unlock the sandbox.", 14) / 2,
+                (int)ButtonRect(cx, startY, ButtonCount - 1).Y + BtnH + 10, 14, new RColor(230, 190, 110, 255));
 
         Raylib.DrawText("v1.0.0", 20, sh - 30, 16, TextSecondary);
 
+        if (ErrorMessage is { } err)
+        {
+            int ew = Raylib.MeasureText(err, 14);
+            Raylib.DrawText(err, sw / 2 - ew / 2, (int)ButtonRect(cx, startY, ButtonCount - 1).Y + BtnH + 30, 14,
+                new RColor(240, 110, 110, 255));
+        }
+
         _loadDialog.Draw();
     }
+
+    private static RRect ButtonRect(int x, int y, int index) =>
+        new(x, y + index * (BtnH + Gap), BtnW, BtnH);
 
     private static void DrawButton(RRect r, string text, Vector2 m, RColor baseCol, RColor hoverCol)
     {

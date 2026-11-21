@@ -569,10 +569,14 @@ public sealed class MacroDialog
         float widthFit = availW / Recipe.Width;
         float heightFit = availH / Recipe.Height;
 
+        float minStep = MinPreviewPinStep;
+        foreach (var p in Recipe.Inputs) minStep = MathF.Max(minStep, ChipElement.PinVisualHeight(p.ext) + 4f);
+        foreach (var p in Recipe.Outputs) minStep = MathF.Max(minStep, ChipElement.PinVisualHeight(p.ext) + 4f);
+
         // Превью не должно превращать 30 пинов в 5 пикселей: шаг между
         // соседними пинами остаётся читаемым, а лишнее уходит в прокрутку.
         float spacingFit = maxPins > 1
-            ? MinPreviewPinStep * (maxPins + 1) / Recipe.Height
+            ? minStep * (maxPins + 1) / Recipe.Height
             : 1f;
 
         // И никогда больше 1:1 — иначе «размер» в окне не совпадает с чипом на холсте.

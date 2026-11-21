@@ -45,6 +45,22 @@ public abstract class Element
 
     protected static void Set(OutputPin pin, bool value) => pin.SetValue(value);
     protected static void Set(OutputPin pin, LogicState state) => pin.SetValue(state);
+
+    /// <summary>Есть ли у элемента хоть один вход с проводом.</summary>
+    protected bool HasInputWire => Inputs.Any(p => p.IsWired);
+
+    /// <summary>
+    /// Подключённый вход не бывает Z: если провод есть, а источник не выдаёт
+    /// определение — читаем как 0. Z остаётся только у полностью отключённого элемента.
+    /// </summary>
+    protected LogicState Read(InputPin pin)
+        => pin.State == LogicState.HighZ && HasInputWire ? LogicState.Zero : pin.State;
+
+    protected LogicState ReadBusBit(InputPin pin, int bit)
+    {
+        var s = pin.BusStates[bit];
+        return s == LogicState.HighZ && HasInputWire ? LogicState.Zero : s;
+    }
 }
 
 public sealed class InElement : Element
@@ -83,7 +99,7 @@ public sealed class InElement : Element
     {
         if (BitWidth == 1)
         {
-            Set(Out, In[0].State);
+            Set(Out, Read(In[0]));
         }
         else
         {
@@ -92,11 +108,11 @@ public sealed class InElement : Element
 
             if (isDrivenByBus)
             {
-                for (int i = 0; i < BitWidth; i++) Out.BusStates[i] = In[0].BusStates[i];
+                for (int i = 0; i < BitWidth; i++) Out.BusStates[i] = ReadBusBit(In[0], i);
             }
             else
             {
-                for (int i = 0; i < BitWidth; i++) Out.BusStates[i] = In[i].State;
+                for (int i = 0; i < BitWidth; i++) Out.BusStates[i] = Read(In[i]);
             }
 
             bool anyConflict = false, anyOne = false, anyDriven = false;
@@ -161,12 +177,12 @@ public sealed class OutElement : Element
     {
         if (BitWidth == 1)
         {
-            Set(InternalOut[0], In.State);
+            Set(InternalOut[0], Read(In));
         }
         else
         {
             for (int i = 0; i < BitWidth; i++)
-                InternalOut[i].SetValue(In.BusStates[i]);
+                InternalOut[i].SetValue(ReadBusBit(In, i));
         }
     }
 }
@@ -186,8 +202,8 @@ public sealed class NandElement : Element
 
     public override void Evaluate()
     {
-        var a = A.State;
-        var b = B.State;
+        var a = Read(A);
+        var b = Read(B);
 
         if (a == LogicState.Zero || b == LogicState.Zero) { Set(Out, LogicState.One); return; }
         if (a == LogicState.Conflict || b == LogicState.Conflict) { Set(Out, LogicState.Conflict); return; }
@@ -213,7 +229,7 @@ public sealed class TriStateBufferElement : Element
 
     public override void Evaluate()
     {
-        var e = Enable.State;
+        var e = Read(Enable);
 
         // Неподключённый/висящий enable трактуем как выключенный: выход Z, а не X.
         if (e == LogicState.Zero || e == LogicState.HighZ)
@@ -227,7 +243,7 @@ public sealed class TriStateBufferElement : Element
             return;
         }
 
-        Set(Out, Data.State);
+        Set(Out, Read(Data));
     }
 }
 
@@ -342,7 +358,7 @@ public sealed class DelayElement : Element, ITickable
     {
         // Пиши в текущую ячейку, читаем самую старую — получаем задержку ровно в DelayTicks тактов.
         var slot = _buffer[_head];
-        slot[0] = In.State;
+        slot[0] = Read(In);
         for (int i = 1; i < 32; i++) slot[i] = LogicState.HighZ;
 
         int oldest = (_head + 1) % _buffer.Length;
@@ -392,7 +408,7 @@ public sealed class BusMerger : Element
         for (int i = 0; i < BitWidth; i++)
         {
             // Если на вход уже пришла шина, берём её младший бит, а не агрегат.
-            var state = In[i].BitWidth > 1 ? In[i].BusStates[0] : In[i].State;
+            var state = In[i].BitWidth > 1 ? ReadBusBit(In[i], 0) : Read(In[i]);
 
             Out.BusStates[i] = state;
 
@@ -442,7 +458,7 @@ public sealed class BusSplitter : Element
     {
         // Агрегат In.State может быть рассинхронизирован с битами — ориентируемся только на биты.
         for (int i = 0; i < BitWidth; i++)
-            Out[i].SetValue(In.BusStates[i]);
+            Out[i].SetValue(ReadBusBit(In, i));
     }
 }
 
@@ -554,21 +570,70 @@ public sealed class ChipElement : Element, ITickable
                 _innerPositions.Remove(el);
     }
 
-    public void RemapExternalPins()
+    public static int PinVisualHeight(Pin pin)
+        => pin.BitWidth > 1 ? Math.Max(4, pin.BitWidth * 2) : 0;
+
+    /// <summary>Минимальная высота корпуса с учётом высоты шинных пинов.</summary>
+    public static int MinHeightFor(IReadOnlyList<Pin> inputs, IReadOnlyList<Pin> outputs)
+    {
+        int count = Math.Max(inputs.Count, outputs.Count);
+        int maxPinH = 0;
+        foreach (var pin in inputs) maxPinH = Math.Max(maxPinH, PinVisualHeight(pin));
+        foreach (var pin in outputs) maxPinH = Math.Max(maxPinH, PinVisualHeight(pin));
+
+        int byCount = Math.Max(MinHeight, count * MinPinSpacing + 20);
+        int byBus = (count + 1) * (maxPinH + 6);
+        return Math.Max(byCount, byBus);
+    }
+
+    /// <summary>
+    /// Восстановить соответствие внешних пинов внутренним IN/OUT после изменения
+    /// разрядности шины, добавления/удаления элементов или загрузки снимка.
+    /// Внешние пины не пересоздаются — провода и подписи остаются на месте.
+    /// </summary>
+    public void SyncExternalPins()
     {
         var ins = _inner.OfType<InElement>().ToList();
-        for (int i = 0; i < _inputs.Length && i < ins.Count; i++)
-            _inputs[i] = (_inputs[i].ext, ins[i].In[0]);
+        for (int i = 0; i < _inputs.Length; i++)
+        {
+            var (ext, oldInner) = _inputs[i];
+            var owner = ins.FirstOrDefault(ie => ie.In.Any(p => ReferenceEquals(p, oldInner)));
+            int idx = owner is null ? i : ins.IndexOf(owner);
+            if (idx >= ins.Count) continue;
+
+            var ie = ins[idx];
+            if (ie.In.Length == 0) continue;
+            SyncWidth(ext, ie.Out.BitWidth);
+            _inputs[i] = (ext, ie.In[0]);
+        }
 
         var outs = _inner.OfType<OutElement>().ToList();
-        for (int i = 0; i < _outputs.Length && i < outs.Count; i++)
-            _outputs[i] = (outs[i].In, _outputs[i].ext);
+        for (int i = 0; i < _outputs.Length; i++)
+        {
+            var (oldInner, ext) = _outputs[i];
+            var owner = outs.FirstOrDefault(oe => ReferenceEquals(oe.In, oldInner));
+            int idx = owner is null ? i : outs.IndexOf(owner);
+            if (idx >= outs.Count) continue;
+
+            var oe = outs[idx];
+            SyncWidth(ext, oe.In.BitWidth);
+            _outputs[i] = (oe.In, ext);
+        }
     }
+
+    private static void SyncWidth(Pin ext, int width)
+    {
+        if (ext.BitWidth == width) return;
+        ext.BitWidth = width;
+        ext.ResetBusStates();
+        ext.SetValue(LogicState.HighZ);
+    }
+
+    public void RemapExternalPins() => SyncExternalPins();
 
     public void SetSize(int w, int h)
     {
-        int maxPins = Math.Max(Inputs.Count, Outputs.Count);
-        int minH = Math.Max(MinHeight, maxPins * MinPinSpacing);
+        int minH = MinHeightFor(Inputs, Outputs);
         _width = Math.Max(MinWidth, w);
         _height = Math.Max(minH, h);
     }
@@ -580,6 +645,12 @@ public sealed class ChipElement : Element, ITickable
     {
         int count = PinCount(pin);
         float margin = PinMargin(count);
+        if (pin.BitWidth > 1)
+        {
+            // Шинный пин прямоугольный: не даём ему вылезти за корпус.
+            float busMargin = (PinVisualHeight(pin) / 2f + 4f) / Math.Max(1, Height);
+            margin = Math.Max(margin, Math.Min(0.45f, busMargin));
+        }
         _pinOffsets[pin] = Math.Clamp(value, margin, 1f - margin);
     }
 
@@ -631,10 +702,14 @@ public sealed class ChipElement : Element, ITickable
     {
         foreach (var (ext, inner) in _inputs)
         {
+            // Нет внешнего провода — внутренний IN остаётся переключателем.
+            // Инъекция Z в этом случае стирала бы пользовательские биты.
+            if (!ext.IsWired && ext.BusStates.All(s => s == LogicState.HighZ)) continue;
+
             int bits = Math.Min(ext.BitWidth, 32);
             for (int i = 0; i < 32; i++)
-                inner.BusStates[i] = i < bits ? ext.BusStates[i] : LogicState.HighZ;
-            inner.SetValue(ext.State);
+                inner.BusStates[i] = i < bits ? ReadBusBit(ext, i) : LogicState.HighZ;
+            inner.SetValue(Read(ext));
         }
 
         _snapshotValid = false;
@@ -655,8 +730,8 @@ public sealed class ChipElement : Element, ITickable
         {
             int bits = Math.Min(ext.BitWidth, 32);
             for (int i = 0; i < 32; i++)
-                ext.BusStates[i] = i < bits ? inner.BusStates[i] : LogicState.HighZ;
-            ext.SetValue(inner.State);
+                ext.BusStates[i] = i < bits ? ReadBusBit(inner, i) : LogicState.HighZ;
+            ext.SetValue(Read(inner));
         }
     }
 
@@ -705,6 +780,10 @@ public sealed class ChipElement : Element, ITickable
 
     public ChipElement Clone()
     {
+        // Внутренние пины могли быть пересозданы сменой разрядности — починим
+        // соответствие до клонирования, иначе FindOwner молча выбросит пины.
+        SyncExternalPins();
+
         var newInner = new List<Element>();
         var map = new Dictionary<Element, Element>();
 

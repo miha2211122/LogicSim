@@ -131,8 +131,10 @@ public sealed class ClipboardController
             var toPin = PinByIndex(newElements[cw.ToIdx], cw.ToPinIdx, isInput: true) as InputPin;
             if (fromPin is null || toPin is null || fromPin.BitWidth != toPin.BitWidth) continue;
 
+            if (circuit.ContainsWire(fromPin, toPin)) continue;
+
             var w = circuit.Connect(fromPin, toPin);
-            w.IsBus = fromPin.BitWidth > 1;
+            w.IsBus = cw.IsBus;
             w.Layer = Math.Clamp(cw.Layer, 0, maxLayer);
             foreach (var wp in cw.Waypoints) w.Waypoints.Add(wp + offset);
         }
@@ -190,9 +192,19 @@ public sealed class ClipboardController
         copy.OutputLabels.Clear(); copy.OutputLabels.AddRange(el.OutputLabels);
 
         for (int i = 0; i < copy.Inputs.Count && i < el.Inputs.Count; i++)
+        {
             copy.Inputs[i].Color = el.Inputs[i].Color;
+            copy.Inputs[i].Weak = el.Inputs[i].Weak;
+            copy.Inputs[i].SetValue(el.Inputs[i].State);
+            copy.Inputs[i].BusStates = el.Inputs[i].BusStates;
+        }
         for (int i = 0; i < copy.Outputs.Count && i < el.Outputs.Count; i++)
+        {
             copy.Outputs[i].Color = el.Outputs[i].Color;
+            copy.Outputs[i].Weak = el.Outputs[i].Weak;
+            copy.Outputs[i].SetValue(el.Outputs[i].State);
+            copy.Outputs[i].BusStates = el.Outputs[i].BusStates;
+        }
 
         if (el is OutElement oldOut && copy is OutElement newOut)
             newOut.Out.Color = oldOut.Out.Color; // ИСПРАВЛЕНО: без [0]

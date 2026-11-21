@@ -123,6 +123,7 @@ public sealed partial class Editor
             ? Ctx.Layout.PinPosition(_wireDrawer.FromElement, _wireDrawer.FromPin)
             : null;
     public Element? WireStartElement => _wireDrawer.FromElement;
+    public OutputPin? WireStartPin => _wireDrawer.FromPin;
 
     public bool IsElementVisible(Element el) => Ctx.Layers.IsVisible(el.Layer);
     public bool CanEdit(Element el) => Ctx.Layers.CanEdit(el.Layer);
@@ -171,7 +172,37 @@ public sealed partial class Editor
 
     private Context Ctx => _stack.Peek();
 
-    private string Snapshot() => SaveSystem.CaptureSnapshot(Ctx.Circuit, Ctx.Layout, Ctx.Layers);
+    /// <summary>
+    /// Тактировать текущий контекст и пересчитать все внешние цепочки проводов,
+    /// чтобы изменения вложенного макроса сразу доходили до остальной схемы.
+    /// </summary>
+    public void StepSimulation()
+    {
+        Ctx.Circuit.Step();
+        foreach (var ctx in _stack.Reverse())
+            if (!ReferenceEquals(ctx, Ctx))
+                ctx.Circuit.Settle();
+    }
+
+    /// <summary>
+    /// Пересобрать соответствия внешних пинов всех открытых макросов и флаги шин
+    /// после любого изменения разрядности внутри вложенного контекста.
+    /// </summary>
+    private void SyncChipChain()
+    {
+        foreach (var ctx in _stack)
+        {
+            if (ctx.OwnerChip is not { } chip) continue;
+            chip.SyncExternalPins();
+            chip.SetSize(chip.Width, chip.Height);
+            chip.ResyncExternalLabels();
+        }
+        foreach (var ctx in _stack)
+            ctx.Circuit.RefreshBusFlags();
+    }
+
+    private string Snapshot() => SaveSystem.CaptureSnapshot(Ctx.Circuit, Ctx.Layout, Ctx.Layers,
+        _palette.Templates, _palette.Library);
 
     private void BeginChange()
     {
@@ -181,7 +212,11 @@ public sealed partial class Editor
 
     private void RestoreSnapshot(string snapshot)
     {
-        SaveSystem.ApplySnapshot(snapshot, Ctx.Circuit, Ctx.Layout, Ctx.Layers);
+        SaveSystem.ApplySnapshot(snapshot, Ctx.Circuit, Ctx.Layout, Ctx.Layers,
+            _palette.Templates, _palette.Library);
+        if (_palette.SelectedTemplate is { } selected &&
+            !_palette.Templates.Contains(selected))
+            _palette.ClearSelection();
         Ctx.OwnerChip?.RemapExternalPins();
 
         _selection.Clear();

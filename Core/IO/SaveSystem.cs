@@ -9,6 +9,8 @@ public sealed class SaveFile
 {
     public int Version { get; set; } = 2;
     public string Name { get; set; } = "";
+    /// <summary>Путь исходного файла; используется автосохранением для возврата к тому же файлу.</summary>
+    public string? SourcePath { get; set; }
     public bool Running { get; set; } = true;
     public Vector2 CameraTarget { get; set; }
     public float CameraZoom { get; set; } = 1f;
@@ -134,12 +136,13 @@ public static class SaveSystem
         Vector2 camTarget, float camZoom,
         List<ChipTemplate> templates, List<ChipTemplate> library,
         string saveName = "", System.Drawing.Color? recentWireColor = null,
-        LayerSet? layers = null)
+        LayerSet? layers = null, string? sourcePath = null)
     {
         var save = SerializeCircuit(circuit, layout);
         save.CameraTarget = camTarget;
         save.CameraZoom = camZoom;
         save.Name = saveName;
+        save.SourcePath = sourcePath ?? path;
         save.RecentWireColorHex = recentWireColor.HasValue ? ColorToHex(recentWireColor.Value) : null;
         if (layers is not null) WriteLayers(layers, save);
 
@@ -157,15 +160,21 @@ public static class SaveSystem
         return JsonSerializer.Deserialize<SaveFile>(File.ReadAllText(path), Opts);
     }
 
-    public static string CaptureSnapshot(Circuit circuit, LayoutAccessor layout, LayerSet? layers = null)
+    public static string CaptureSnapshot(Circuit circuit, LayoutAccessor layout, LayerSet? layers = null,
+        List<ChipTemplate>? templates = null, List<ChipTemplate>? library = null)
     {
         var save = SerializeCircuit(circuit, layout);
         if (layers is not null) WriteLayers(layers, save);
+        if (templates is not null)
+            foreach (var tpl in templates) save.Templates.Add(ToSavedTemplate(tpl));
+        if (library is not null)
+            foreach (var tpl in library) save.Library.Add(ToSavedTemplate(tpl));
         return JsonSerializer.Serialize(save, Opts);
     }
 
     public static void ApplySnapshot(string snapshot, Circuit circuit, LayoutAccessor layout,
-        LayerSet? layers = null)
+        LayerSet? layers = null,
+        List<ChipTemplate>? templates = null, List<ChipTemplate>? library = null)
     {
         var save = JsonSerializer.Deserialize<SaveFile>(snapshot, Opts);
         if (save is null) return;
@@ -178,6 +187,16 @@ public static class SaveSystem
         {
             ReadLayers(save, layers);
             NormalizeLayers(circuit, layers);
+        }
+        if (templates is not null)
+        {
+            templates.Clear();
+            foreach (var t in save.Templates) templates.Add(FromSavedTemplate(t));
+        }
+        if (library is not null)
+        {
+            library.Clear();
+            foreach (var t in save.Library) library.Add(FromSavedTemplate(t));
         }
     }
 
@@ -516,6 +535,7 @@ public static class SaveSystem
             var toPin = PinByIndex(toEl, sw.ToPinIdx, isInput: true);
             if (fromPin is OutputPin op && toPin is InputPin ip && op.BitWidth == ip.BitWidth)
             {
+                if (circuit.ContainsWire(op, ip)) continue;
                 var w = circuit.Connect(op, ip);
                 w.IsBus = sw.IsBus;
                 w.Layer = sw.Layer;

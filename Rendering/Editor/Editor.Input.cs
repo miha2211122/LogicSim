@@ -12,7 +12,16 @@ public sealed partial class Editor
 
         bool anyModalAtStart = AnyModalOpen;
         HoveredWire = null;
+
+        if (_statusTimer > 0f)
+        {
+            _statusTimer -= Raylib.GetFrameTime();
+            if (_statusTimer <= 0f) StatusMessage = null;
+        }
+
         var delta = Raylib.GetMouseDelta();
+
+        if (TutorialHandleInput()) return;
 
         if (_palette.IsContextMenuOpen)
         {
@@ -36,6 +45,7 @@ public sealed partial class Editor
                 if (Ctx.Layout.TryGet(target, out var pos))
                     Ctx.Layout.Place(target, pos.X, pos.Y);
 
+                SyncChipChain();
                 _busWidthTarget = null;
             }
             return;
@@ -60,6 +70,12 @@ public sealed partial class Editor
 
             if (_libraryDialog.PartSelected is { } part)
                 {
+                    if (IsTutorial && !_palette.IsAllowed(part.Tool))
+                    {
+                        ShowStatus("That part is not allowed on this level.");
+                        _libraryDialog.Close();
+                        return;
+                    }
                     _palette.SelectBuiltin(part.Tool);
                     _libraryDialog.Close();
                     StatusMessage = $"Selected {part.Name} — click canvas to place.";
@@ -220,9 +236,11 @@ public sealed partial class Editor
             _macroDialog.Update();
             if (_macroDialog.Confirmed)
             {
+                BeginChange();
                 if (_macroDialog.EditingTemplate is { } tplEdit)
                 {
                     ApplyEditToTemplate(tplEdit);
+                    SyncChipChain();
                     StatusMessage = $"Macro '{_macroDialog.Name}' saved. All instances updated.";
                     _statusTimer = 2f;
                 }
@@ -284,20 +302,26 @@ public sealed partial class Editor
                           || Raylib.IsKeyDown(KeyboardKey.RightShift);
             if (Raylib.IsKeyPressed(KeyboardKey.Z)) { if (ctrlShift) Redo(); else Undo(); return; }
             if (Raylib.IsKeyPressed(KeyboardKey.Y)) { Redo(); return; }
-            if (Raylib.IsKeyPressed(KeyboardKey.S)) { RequestSave(); return; }
-            if (Raylib.IsKeyPressed(KeyboardKey.O)) { RequestLoad(); return; }
+            if (Raylib.IsKeyPressed(KeyboardKey.S)) { if (IsTutorial) { ShowStatus("Saving is disabled in tutorial."); return; } RequestSave(); return; }
+            if (Raylib.IsKeyPressed(KeyboardKey.O)) { if (IsTutorial) { ShowStatus("Loading is disabled in tutorial."); return; } RequestLoad(); return; }
             if (Raylib.IsKeyPressed(KeyboardKey.C)) { CopySelection(); return; }
-            if (Raylib.IsKeyPressed(KeyboardKey.V)) { PasteSelection(); return; }
-            if (Raylib.IsKeyPressed(KeyboardKey.D)) { DuplicateSelection(); return; }
+            if (Raylib.IsKeyPressed(KeyboardKey.V)) { if (IsTutorial) { ShowStatus("Paste is disabled in tutorial."); return; } PasteSelection(); return; }
+            if (Raylib.IsKeyPressed(KeyboardKey.D)) { if (IsTutorial) { ShowStatus("Duplicate is disabled in tutorial."); return; } DuplicateSelection(); return; }
             if (Raylib.IsKeyPressed(KeyboardKey.A))
             {
                 if (ctrlShift) _selection.Clear();
                 else _selection.SelectAll(VisibleElements());
                 return;
             }
-            if (Raylib.IsKeyPressed(KeyboardKey.M)) { if (!Ctx.ReadOnly) StartMacro(camera); return; }
+            if (Raylib.IsKeyPressed(KeyboardKey.M))
+            {
+                if (IsTutorial && !TutorialAllowsMacros) ShowStatus("Macros unlock at level 7.");
+                else if (!Ctx.ReadOnly) StartMacro(camera);
+                return;
+            }
             if (Raylib.IsKeyPressed(KeyboardKey.L))
             {
+                if (IsTutorial) { ShowStatus("Macros are disabled in tutorial."); return; }
                 _libraryDialog.Open(_palette.Templates, _palette.Library);
                 return;
             }
@@ -360,15 +384,32 @@ public sealed partial class Editor
             _panningLmb = false;
 
         _palette.HasElements = Ctx.Circuit.Elements.Count > 0;
-        _palette.CanMakeMacro = !Ctx.ReadOnly;
+        _palette.CanMakeMacro = !Ctx.ReadOnly && (!IsTutorial || TutorialAllowsMacros);
 
         if (_contextMenu.Update()) { EndElementDrag(); return; }
 
         bool paletteChanged = _palette.Update();
         bool overPalette = _palette.IsMouseOver();
 
-        if (_palette.LibraryButtonPressed) { _libraryDialog.Open(_palette.Templates, _palette.Library); return; }
-        if (_palette.MakeMacroPressed && !Ctx.ReadOnly) { StartMacro(camera); return; }
+        if (_palette.LastDeniedTool is { } denied)
+        {
+            ShowStatus($"{denied} is not allowed on this level.");
+            _palette.LastDeniedTool = null;
+        }
+
+        if (_palette.LibraryButtonPressed)
+        {
+            if (IsTutorial) ShowStatus("Use LIBRARY only for parts allowed on this level.");
+            _libraryDialog.SetAllowedTools(_palette.AllowedTools);
+            _libraryDialog.Open(_palette.Templates, _palette.Library);
+            return;
+        }
+        if (_palette.MakeMacroPressed)
+        {
+            if (IsTutorial && !TutorialAllowsMacros) ShowStatus("Macros unlock at level 7.");
+            else if (!Ctx.ReadOnly) StartMacro(camera);
+            return;
+        }
 
         if (HandleContextMenuRequests(ref camera)) return;
         if (HandleRightClick(mouseScreen, overPalette)) return;
@@ -394,11 +435,6 @@ public sealed partial class Editor
             EndElementDrag();
         }
 
-        if (_statusTimer > 0f)
-        {
-            _statusTimer -= Raylib.GetFrameTime();
-            if (_statusTimer <= 0f) StatusMessage = null;
-        }
     }
 
     private void UpdatePasteHologram(ref Camera2D camera, Vector2 delta)
@@ -707,6 +743,7 @@ public sealed partial class Editor
         }
 
         int count = _palette.PendingCount;
+        if (!CanPlaceTutorialElements(count)) { _palette.ClearSelection(); return; }
         if (count > 0 && !CanEditActiveLayer)
         {
             StatusMessage = "Active layer is hidden or locked.";
